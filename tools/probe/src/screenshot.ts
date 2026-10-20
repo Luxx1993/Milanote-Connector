@@ -4,7 +4,7 @@
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { CdpConnection, browserWsUrl, isMilanoteUrl, listTargets } from './cdp.ts';
+import { CdpConnection, browserWsUrl, isMilanoteUrl, listTargets } from '../../../src/session/cdp.ts';
 
 export async function screenshot(port: number, outDir: string, urlContains?: string): Promise<string> {
   const cdp = await CdpConnection.connect(await browserWsUrl(port));

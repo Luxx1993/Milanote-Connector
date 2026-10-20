@@ -24,7 +24,8 @@ Vor dem Schreiben läuft jede Zeile durch `src/redact.ts` (Tests in `test/probe/
 ```bash
 npm install
 
-# 1. Chrome mit eigenem Profil und Debug-Port starten
+# 1. Chrome mit eigenem Profil und Debug-Port starten: am einfachsten `npm run chrome`
+#    (Profil ~/.milanote-connector/chrome-profile, dasselbe wie für den Connector). Oder von Hand:
 # Windows (PowerShell):
 & "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --user-data-dir="$env:USERPROFILE\milanote-probe-profile" https://app.milanote.com
 # macOS:

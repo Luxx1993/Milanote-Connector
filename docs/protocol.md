@@ -2,6 +2,8 @@
 
 Stand: 20.10.2026. Ergebnis der Phase 0 aus dem Fahrplan, **erster Durchgang ohne Zugriff auf ein Milanote-Konto**.
 
+> **Nachtrag 20.10.2026:** Phase 0 ist bestätigt. Antworten: bezahlter Plan (Limits aus 4.3 und 6 entfallen weitgehend, PDF/PNG-Export sollte verfügbar sein); die Fremdtools werden nicht lokal ausprobiert (Abschnitt 9, Schritte 5 und 6 entfallen). Für Frage 5a ist in Phase 1 Weg B umgesetzt; der Abnahmetest in `docs/phase1.md` klärt, ob er trägt. Der Mitschnitt (Schritt 3) bleibt für Bild-Upload und Export vor Phase 4 und 6 nötig.
+
 ## 0. Was hier geprüft ist und was nicht
 
 Dieser Durchgang lief in einer Cloud-Umgebung ohne Milanote-Anmeldung, ohne deinen Browser und ohne Windows. Deshalb:

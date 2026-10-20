@@ -94,9 +94,8 @@ export async function browserWsUrl(port: number): Promise<string> {
     response = await fetch(`http://127.0.0.1:${port}/json/version`);
   } catch {
     throw new Error(
-      `Kein Browser auf 127.0.0.1:${port}. Chrome mit eigenem Profil starten, z. B.:\n` +
-        `  chrome --remote-debugging-port=${port} --user-data-dir=<Pfad>/.chrome-profile https://app.milanote.com\n` +
-        'Seit Chrome 136 wird der Debug-Port im Standardprofil ignoriert; ein eigenes Profil ist Pflicht (siehe tools/probe/README.md).',
+      `Kein Browser mit Debug-Port auf 127.0.0.1:${port}. Chrome mit \`npm run chrome\` starten ` +
+        '(eigenes Profil; seit Chrome 136 ignoriert Chrome den Debug-Port im Standardprofil).',
     );
   }
   const info = (await response.json()) as { webSocketDebuggerUrl?: string };

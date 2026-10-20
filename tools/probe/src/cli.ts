@@ -2,7 +2,7 @@
 
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { CdpConnection, browserWsUrl, isMilanoteUrl, listTargets } from './cdp.ts';
+import { CdpConnection, browserWsUrl, isMilanoteUrl, listTargets } from '../../../src/session/cdp.ts';
 import { capture } from './capture.ts';
 import { screenshot } from './screenshot.ts';
 import { summarizeFile } from './summarize.ts';

@@ -6,7 +6,7 @@
 import { createWriteStream, mkdirSync, type WriteStream } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
-import { CdpConnection, browserWsUrl, isMilanoteUrl, listTargets, type CdpEvent } from './cdp.ts';
+import { CdpConnection, browserWsUrl, isMilanoteUrl, listTargets, type CdpEvent } from '../../../src/session/cdp.ts';
 import { redactBody, redactHeaders, redactUrl, scrubLine, truncate } from './redact.ts';
 
 export interface CaptureOptions {
