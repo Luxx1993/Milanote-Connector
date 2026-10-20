@@ -1,0 +1,16 @@
+node_modules/
+dist/
+coverage/
+*.log
+
+# Mitschnitte und Screenshots aus dem Probe-Skript: enthalten Boardinhalte und IDs, nie committen
+tools/probe/captures/
+*.capture.jsonl
+
+# Geheimnisse
+.env
+.env.*
+!.env.example
+
+# Browserprofile für CDP
+.chrome-profile/

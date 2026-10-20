@@ -1,0 +1,21 @@
+{
+  "name": "milanote-connector",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Lokaler MCP-Server, mit dem Claude Milanote-Boards liest und schreibt (Phase 0: Machbarkeit)",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "probe": "tsx tools/probe/src/cli.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.0",
+    "tsx": "^4.23.0",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7"
+  }
+}
