@@ -76,9 +76,9 @@ export interface DropTarget {
 }
 
 /**
- * Prüft, ob `elementId` dorthin verschoben werden darf (Regeln wie in milanote-plus-plus):
- * Boards nur auf Boards, Spalten nur auf Boards, Aufgaben nur in To-do-Listen und umgekehrt,
- * nie in sich selbst oder einen Nachfahren.
+ * Prüft, ob `elementId` dorthin verschoben werden darf: Spalten nur auf Boards (Spalten lassen sich laut Hilfe-Center
+ * nicht verschachteln), Aufgaben nur in To-do-Listen und umgekehrt, nie in sich selbst oder einen Nachfahren.
+ * Boards und Dokumente dürfen laut Hilfe-Center auch in Spalten liegen.
  */
 export function dropTarget(elements: Elements, elementId: string, targetId: string): DropTarget {
   const el = elements[elementId];
@@ -95,7 +95,6 @@ export function dropTarget(elements: Elements, elementId: string, targetId: stri
   if (type === 'TASK_LIST' && el.elementType !== 'TASK') throw new MilanoteError('args', `In eine To-do-Liste passen nur Aufgaben, kein ${el.elementType}`);
   if (type === 'COLUMN' && el.elementType === 'COLUMN') throw new MilanoteError('args', 'Spalten können nicht in Spalten liegen');
   if (el.elementType === 'COLUMN' && type !== 'BOARD') throw new MilanoteError('args', 'Spalten können nur auf ein Board verschoben werden');
-  if (el.elementType === 'BOARD' && type !== 'BOARD') throw new MilanoteError('args', 'Boards können nur auf ein anderes Board verschoben werden');
   const boardId = type === 'BOARD' ? targetId : boardAbove(elements, targetId);
   if (!boardId) throw new MilanoteError('not_found', `Zu ${targetId} wurde kein Board gefunden`);
   return { parentId: targetId, type, boardId };

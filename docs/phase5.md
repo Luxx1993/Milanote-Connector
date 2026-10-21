@@ -83,7 +83,7 @@ Mit `MILANOTE_METRICS_FILE=metrics.json` (oder per `claude mcp add … -e`) übe
 | Spalte | ans Ende der Spalte (keine Koordinaten) |
 | To-do-Liste | nur Aufgaben, ans Ende |
 
-Regeln wie in milanote-plus-plus: Boards und Spalten nur auf Boards; Aufgaben nur in Listen und umgekehrt; nie in sich selbst oder einen Nachfahren; Home und alles darin gesperrt. Spalten und Boards nehmen ihren Inhalt mit. **Nicht möglich:** innerhalb einer Liste umsortieren. Die Aktion ist `ELEMENT_MOVE_MULTI` mit `DROP`; milanote-skill nutzt `ELEMENT_MOVE` (siehe `docs/protocol.md` 5c). Der Abgleich zeigt, ob Milanote sie annimmt.
+Regeln: Spalten nur auf Boards (Spalten lassen sich laut Hilfe-Center nicht verschachteln); Boards und Dokumente dürfen auch in Spalten (ebenfalls laut Hilfe-Center); Aufgaben nur in Listen und umgekehrt; nie in sich selbst oder einen Nachfahren; Home und alles darin gesperrt. Spalten und Boards nehmen ihren Inhalt mit. **Nicht möglich:** innerhalb einer Liste umsortieren. Die Aktion ist `ELEMENT_MOVE_MULTI` mit `DROP`; milanote-skill nutzt `ELEMENT_MOVE` (siehe `docs/protocol.md` 5c). Der Abgleich zeigt, ob Milanote sie annimmt.
 
 ## Ändern (`update_element`)
 

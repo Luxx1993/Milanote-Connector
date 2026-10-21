@@ -28,6 +28,34 @@ describe('textToDoc', () => {
   });
 });
 
+describe('Markdown gemäß Milanotes Textformaten', () => {
+  const nodeTypes = (md: string) => (textToDoc(md, key).content ?? []).map((n) => [n.type, n.attrs?.level ?? null]);
+
+  it('kennt nur zwei Überschriftsebenen: ### wird wie ## behandelt', () => {
+    expect(nodeTypes('# a\n\n## b\n\n### c\n\n#### d')).toEqual([['heading', 1], ['heading', 2], ['heading', 2], ['paragraph', null]]);
+  });
+
+  it('wandelt Codeblöcke um und behält Leerzeilen und Einrückung darin', () => {
+    const doc = textToDoc('Vorher\n\n```ts\nconst a = 1;\n\n  if (a) {}\n```\nNachher', key);
+    expect(doc.content?.map((n) => n.type)).toEqual(['paragraph', 'codeBlock', 'paragraph']);
+    const code = doc.content?.[1];
+    expect(code?.attrs).toMatchObject({ language: 'ts' });
+    expect(code?.content).toEqual([{ type: 'text', text: 'const a = 1;\n\n  if (a) {}' }]);
+    expect(docToText(doc)).toBe('Vorher\n\n```ts\nconst a = 1;\n\n  if (a) {}\n```\n\nNachher');
+  });
+
+  it('schließt einen offenen Codeblock am Textende und lässt leere zu', () => {
+    expect(nodeTypes('```\nohne Ende')).toEqual([['codeBlock', null]]);
+    expect(textToDoc('```\n```', key).content?.[0]).toMatchObject({ type: 'codeBlock', attrs: { language: null } });
+  });
+
+  it('erzeugt die belegten Elemente: Trennlinie, Inline-Code, Durchgestrichenes, Aufgaben, Zitat', () => {
+    const doc = textToDoc('---\n\n`x` und ~~y~~\n\n- [x] erledigt\n\n> Zitat', key);
+    expect(doc.content?.map((n) => n.type)).toEqual(['horizontalRule', 'paragraph', 'taskList', 'blockquote']);
+    expect(doc.content?.[1]?.content?.map((n) => n.marks?.[0]?.type)).toEqual(['code', undefined, 'strike']);
+  });
+});
+
 describe('nextCanvasPosition', () => {
   it('setzt auf leere Boards oben links', () => {
     expect(nextCanvasPosition([])).toEqual({ x: 0, y: 2, score: SCORE_STEP });

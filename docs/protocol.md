@@ -2,6 +2,8 @@
 
 Stand: 20.10.2026. Ergebnis der Phase 0 aus dem Fahrplan, **erster Durchgang ohne Zugriff auf ein Milanote-Konto**.
 
+> **Prüfung gegen offizielle Angaben, 21.10.2026:** Hilfe-Center, Versionshinweise, Nutzungsbedingungen und Datenschutz sind abgeglichen, Ergebnis und Korrekturen stehen in [`official-sources.md`](official-sources.md). Wichtigste Punkte: keine offizielle API dokumentiert; die Bedingungen erwähnen Automatisierung nicht, untersagen aber „Back-end“-Zugriff und Reverse Engineering; Bildlimit 10 MB (Free) bzw. 100 MB (Pro) statt 4 MB; Export-Formate und Papierkorb (3 Monate) sind offiziell dokumentiert, das **Protokoll** dazu nicht. Wo unten etwas anderes steht, gilt `official-sources.md`.
+
 > **Nachtrag 20.10.2026:** Phase 0 ist bestätigt. Antworten: bezahlter Plan (Limits aus 4.3 und 6 entfallen weitgehend, PDF/PNG-Export sollte verfügbar sein); die Fremdtools werden nicht lokal ausprobiert (Abschnitt 9, Schritte 5 und 6 entfallen). Für Frage 5a ist in Phase 1 Weg B umgesetzt; der Abnahmetest in `docs/phase1.md` klärt, ob er trägt. Der Mitschnitt (Schritt 3) bleibt für Bild-Upload und Export vor Phase 4 und 6 nötig.
 
 ## 0. Was hier geprüft ist und was nicht
@@ -25,22 +27,22 @@ Kennzeichnung im Folgenden: **[M++]** = milanote-plus-plus `docs/milanote-api.md
 1. **Schreiben, Lesen, Positionieren:** Das Protokoll ist von zwei unabhängigen Quellen recht genau beschrieben. Lesen läuft über REST (`/api/boards`, `/api/elements`, `/api/users/me`), Schreiben über Socket.IO-Aktionen (`ELEMENT_CREATE`, `ELEMENT_UPDATE`, `ELEMENT_MOVE_MULTI`). Koordinaten sind Rastereinheiten (ca. 9 px).
 2. **Größter offener Punkt ist nicht der Bild-Upload, sondern der Schreibweg.** [M++] schreibt mit einem eigenen Socket.IO-Client und bekommt Status 200. [Skill] schreibt, ein eigener Socket-Client werde ignoriert, und schreibt deshalb über den Redux-Store des offenen Editors. Trotzdem gehen dort Schreibvorgänge zeitweise verloren. Welcher Weg bei dir stabil ist, entscheidet die Architektur von Phase 1 (Abschnitt 5a).
 3. **Bild-Upload ist nachvollziehbar.** [Skill] hat ihn am 16.10.2026 live verifiziert: leeres `IMAGE`-Element per Socket anlegen, `POST /api/elements/attachments/presign`, Datei per `PUT` an die signierte URL. Das Abbruchkriterium aus dem Fahrplan greift damit voraussichtlich nicht; bestätigen muss es der Mitschnitt an deinem Konto (Abschnitt 6).
-4. **Export (PDF/PNG) ist von keiner Quelle dokumentiert.** Markdown können wir selbst aus `get_board` erzeugen (so macht es [M++]). Für den nativen PDF/PNG-Export braucht es den Mitschnitt. Screenshot per CDP funktioniert technisch (am Fake-Server getestet), mit bekannten Fallstricken (Abschnitt 7).
+4. **Export:** Milanote dokumentiert PDF (Standard, Large), PNG, Word, Markdown, Text und ZIP, nicht aber das Protokoll dahinter. Das Home-Board lässt sich nicht exportieren. Markdown können wir auch selbst aus `get_board` erzeugen (so macht es [M++]). Für den nativen Export braucht es den Mitschnitt. Screenshot per CDP funktioniert technisch (am Fake-Server getestet), mit bekannten Fallstricken (Abschnitt 7).
 5. **Nutzungsbedingungen:** Milanote untersagt Reverse Engineering und „Back-end“-Zugriff ohne schriftliche Zustimmung (Abschnitt 2). Das betrifft jeden der Ansätze, auch die fremden Tools.
 6. **Vorläufige Empfehlung: selbst bauen**, die Fremdprojekte nur als Protokollreferenz nutzen. Begründung in Abschnitt 8. Endgültig erst nach deinen lokalen Tests.
 
 ## 2. Nutzungsbedingungen
 
-Quelle: [milanote.com/legal/terms-of-service](https://milanote.com/legal/terms-of-service), Stand der Seite 26.02.2024 (ein Tracker meldet eine Fassung mit Wirkung zum 25.02.2026; nicht bestätigt, bitte die Live-Seite lesen). Relevante Stellen (Auszüge):
+Quelle: [milanote.com/legal/terms-of-service](https://milanote.com/legal/terms-of-service), die offizielle Seite nennt „Last updated: 26 February 2024“ (die „2026er Fassung“ eines Drittanbieter-Trackers ist dort nicht zu sehen). Die Klauselnummern unterhalb von 7.3, 7.6 und 7.7 wichen zwischen zwei Abrufen ab; verlässlich sind die Zitate. Auszüge:
 
-- **7.3(a)(2):** „no 'back-end' access to Milanote is available to the User unless expressly agreed in writing“
-- **7.7(c)(2):** der Nutzer darf nicht „directly or indirectly copy, recreate, decompile, reverse engineer or otherwise obtain, modify or use any source or object …“
-- **7.6(a):** nichts tun, was die Sicherheit der Systeme beeinträchtigt
-- **2(c), 7.1(c):** Milanote darf Konten bei Verstößen sperren bzw. die Lizenz nach eigenem Ermessen entziehen
+- **7.3:** „no 'back-end' access to Milanote is available to the User unless expressly agreed in writing“; Milanote werde nur von der Firma installiert, betrieben und gewartet
+- **7.7:** untersagt ist „directly or indirectly copy, recreate, decompile, reverse engineer“ (auch Algorithmen und Architektur)
+- **7.6:** „shall not do anything to prejudice the security or privacy of the Company's systems“
+- **Folgen:** „The Company may suspend the Account or restrict the access of any User that breaches the terms“; die Lizenz ist widerruflich (7.1)
 
-Automatisierung, Bots oder Scraping werden nicht ausdrücklich erwähnt. Die Nutzung des privaten Protokolls und das Mitschneiden fallen aber plausibel unter 7.3 und 7.7. Folgen im schlimmsten Fall: Sperrung des Kontos.
+Abschnitt 7 äußert sich zu Automatisierung, Robotern, Skripten und KI **nicht**. Die Nutzung des privaten Protokolls und das Mitschneiden fallen aber plausibel unter 7.3 und 7.7. Folgen im schlimmsten Fall: Sperrung des Kontos. Die Offenlegungsrichtlinie von Milanote schützt nur Sicherheitsforschung an eigens angelegten Testkonten und ist kein Freibrief hierfür.
 
-**Vorschlag:** Bei Milanote-Support schriftlich anfragen, ob ein persönlicher, lokaler Connector für das eigene Konto geduldet wird (7.3(a)(2) sieht eine schriftliche Zustimmung ausdrücklich vor). Bis dahin nur ein Test-Workspace, keine wichtigen Daten, niedrige Frequenz. **Das ist deine Entscheidung**, ich setze nichts davon voraus.
+**Vorschlag:** Beim Support (support@milanote.com, Antwort laut Hilfe-Center „normally within 24 hours“) schriftlich anfragen, ob ein persönlicher, lokaler Connector für das eigene Konto geduldet wird (7.3 sieht eine schriftliche Zustimmung ausdrücklich vor). Einen Entwurf findest du in `official-sources.md`. Bis dahin nur ein Test-Workspace, keine wichtigen Daten, niedrige Frequenz. **Das ist deine Entscheidung**, ich setze nichts davon voraus.
 
 ## 3. Quellen und Installationsskripte
 
@@ -116,7 +118,7 @@ Nicht zum Ausprobieren vorgesehen, nur Referenz. Liest per CDP alle Cookies inkl
 | Endpunkt | Inhalt | Quelle |
 | --- | --- | --- |
 | `GET /api/users/me` | `user{_id, email, rootBoardId, quickNotesRootId, clientId, clientTick, contentLimit, …}` | [M++], [Skill], [luscoma] |
-| `GET /api/users/me/counts` | Nutzung und Limit (`contentLimit`, Free = 100 Notizen) | [M++] |
+| `GET /api/users/me/counts` | Nutzung und Limit (`contentLimit`; Free = 100 Karten laut Hilfe-Center) | [M++] |
 | `GET /api/users/me/app-init?timezone=<min>` | Boot-Daten inkl. `boardHierarchies` | [M++] |
 | `GET /api/boards?excludeSelf=false&loadAncestors=false&ids=<id>[,<id>]` | Board plus Unterbaum ohne Inhalt der Unterboards; `canvasOrder=true` liefert Z-Reihenfolge; `tokens=` für Share-Boards | [M++], [Skill] |
 | `GET /api/boards/modified?ids=<ids>` | `modifiedTime` je Board (Polling der App) | [M++] |
@@ -220,14 +222,15 @@ Ablauf laut [Skill] (am 16.10.2026 mit PNG und Textdatei verifiziert):
 
 Bild per URL: [Skill] meldet „image URL“ als verifizierte Erstellung; [M++] beschreibt, dass die Link-Vorschau für Bild-URLs `elementType: "IMAGE"` liefert und der Client das Element per `ELEMENT_SET_TYPE` umwandelt.
 
-Offen (klärt der Mitschnitt): ob die App nach dem `PUT` noch eine Bestätigungs-Aktion sendet; wer Breite, Höhe und Thumbnails setzt; das echte Größenlimit (4 MB ist die Grenze des Skills, nicht unbedingt Milanotes); Fehlerbild beim Free-Plan-Limit (laut Cotlet 10 Uploads).
+Offen (klärt der Mitschnitt): ob die App nach dem `PUT` noch eine Bestätigungs-Aktion sendet; wer Breite, Höhe und Thumbnails setzt; Fehlerbild an den Limits. **Offiziell** (Hilfe-Center): Bilder bis 10 MB (Free) bzw. **100 MB (Pro)**, andere Dateien bis 50 MB bzw. 5 GB; Free: 100 Karten und 10 Dateien, Pro unbegrenzt. 4 MB war nur die Grenze des Skills. Erlaubte Bildformate: JPEG, GIF, PNG, WebP, TIFF, BMP, ICO, SVG und RAW-Formate; **HEIC ist nicht aufgeführt**.
 
 **Abbruchkriterium:** voraussichtlich nicht erreicht, weil der Ablauf nachvollziehbar und von einer Quelle live bestätigt ist.
 
 ## 7. Export und Screenshot
 
-- **Markdown/Text:** selbst erzeugen aus `get_board` (TipTap → Markdown). [M++] macht genau das mit einem Gliederungsformat (`#` Board, `##` Spalte, `###` Notiz, `- [ ]` Aufgaben). Kein natives Export-Protokoll nötig.
-- **PDF/PNG nativ:** von keiner Quelle beschrieben. Kandidaten: `media-service/api/preview/<boardId>` oder ein eigener Export-Endpunkt. Ob synchron, asynchron (Job) oder als Download, zeigt der Mitschnitt; das Probe-Skript protokolliert Downloads (`download.begin`).
+- **Offiziell** ([Hilfe](https://help.milanote.com/en/articles/111395-exporting-your-work.md)): PDF Standard/Large, PNG, Word, Markdown, Text und „Generate ZIP“ (alle Bilder und Dateien, per E-Mail). PDF und PNG sind auf **eine Seite** begrenzt; das **Home-Board kann nicht exportiert werden**.
+- **Markdown/Text:** Milanote bietet beides nativ an (was genau drinsteht, beschreibt die Hilfe nicht). Alternativ selbst erzeugen aus `get_board` (TipTap → Markdown), wie es [M++] mit einem Gliederungsformat macht (`#` Board, `##` Spalte, `###` Notiz, `- [ ]` Aufgaben).
+- **PDF/PNG nativ:** das Protokoll ist von keiner Quelle beschrieben. Kandidaten: `media-service/api/preview/<boardId>` oder ein eigener Export-Endpunkt. Ob synchron, asynchron (Job) oder als Download, zeigt der Mitschnitt; das Probe-Skript protokolliert Downloads (`download.begin`).
 - **Screenshot per CDP:** `Page.captureScreenshot` nach `Page.bringToFront`; im Probe-Skript umgesetzt und gegen eine lokale Seite getestet. Fallstricke laut [Skill]: hängt bei minimiertem Fenster (das Skript prüft deshalb `document.visibilityState`), zeigt nur den sichtbaren Ausschnitt. Ganzes Board erfordert Zoom-to-Fit oder Kacheln, das ist Phase 6.
 
 ## 8. Empfehlung: nutzen, forken oder selbst bauen
@@ -254,7 +257,7 @@ Voraussetzungen: Node 22, Chrome, ein Milanote-Test-Workspace mit leerem Testboa
    5. Spalte anlegen, Notiz hineinziehen
    6. To-do-Liste mit zwei Aufgaben, eine abhaken
    7. Link einfügen
-   8. Bild per Datei hochladen (PNG unter 4 MB)
+   8. Bild per Datei hochladen (PNG, klein; offizielles Limit: Free 10 MB, Pro 100 MB je Bild)
    9. Bild per URL einfügen
    10. Export: Markdown/Text, PDF, PNG (falls im Plan verfügbar)
    11. Notiz in den Papierkorb
@@ -267,5 +270,5 @@ Voraussetzungen: Node 22, Chrome, ein Milanote-Test-Workspace mit leerem Testboa
 
 1. Welches Betriebssystem nutzt du? milanote-plus-plus läuft nur unter Windows, milanote-skill ist nur dort getestet.
 2. Wie gehst du mit den Nutzungsbedingungen um (nachfragen, Risiko tragen, abbrechen)?
-3. Free- oder bezahlter Plan? Beeinflusst Limits (100 Elemente, 10 Uploads) und ob PDF/PNG-Export verfügbar ist.
+3. ~~Free- oder bezahlter Plan?~~ Beantwortet: bezahlt. Damit entfallen Kartenlimit (Free: 100) und Dateilimit (Free: 10), und Bilder dürfen bis 100 MB groß sein. Ob der Export planabhängig ist, nennt die Hilfe nicht.
 4. Willst du die Fremdtools überhaupt lokal ausprobieren, oder reicht dir der eigene Mitschnitt? Für die Architekturfrage (Abschnitt 5a) genügt der Mitschnitt plus ein kurzer Schreibtest in Phase 1.

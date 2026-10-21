@@ -1,7 +1,9 @@
 // Text <-> TipTap/ProseMirror-Dokument, wie Milanote es in `content.textContent` speichert.
-// Unterstützt leichtes Markdown: Überschriften (#–###), Listen (-, 1.), Aufgaben (- [ ] / - [x]),
-// Zitate (>), Trennlinien (---), **fett**, *kursiv*, ~~durchgestrichen~~, `Code`, [Text](url) und nackte URLs.
-// Knotenformen laut docs/protocol.md 4.4 (milanote-plus-plus); in Phase 3 nicht am eigenen Konto verifiziert.
+// Unterstützt leichtes Markdown: Überschriften (# und ##), Listen (-, 1.), Aufgaben (- [ ] / - [x]), Zitate (>),
+// Codeblöcke (```), Trennlinien (---), **fett**, *kursiv*, ~~durchgestrichen~~, `Code`, [Text](url) und nackte URLs.
+// Milanote kennt laut Hilfe-Center nur zwei Überschriftsebenen („Large“ und „Normal heading“); ### wird deshalb wie ##
+// behandelt. Trennlinien (Juni 2025), Inline-Code (Oktober 2026) und Codeblöcke sind in Hilfe bzw. Release Notes belegt
+// (docs/official-sources.md). Die Knotenformen stammen aus milanote-plus-plus und sind am eigenen Konto nicht verifiziert.
 
 export interface TipTapMark {
   type: string;
@@ -88,16 +90,32 @@ export function textToDoc(text: string, blockKey: Key): TipTapNode {
     list.node.content?.push(item);
   };
 
+  let fence: { language: string | null; lines: string[] } | undefined;
+  const flushFence = () => {
+    if (!fence) return;
+    const code: TipTapNode = { type: 'codeBlock', attrs: { key: blockKey(), language: fence.language } };
+    if (fence.lines.length) code.content = [{ type: 'text', text: fence.lines.join('\n') }];
+    blocks.push(code);
+    fence = undefined;
+  };
+
   for (const raw of text.replace(/\r\n?/g, '\n').split('\n')) {
     const line = raw.replace(/\s+$/, '');
     let m: RegExpExecArray | null;
-    if (!line.trim()) {
+    if (fence) {
+      if (/^\s*```\s*$/.test(line)) flushFence();
+      else fence.lines.push(raw);
+    } else if ((m = /^\s*```\s*([\w+#.-]*)\s*$/.exec(line))) {
+      flushPara();
+      flushList();
+      fence = { language: m[1] || null, lines: [] };
+    } else if (!line.trim()) {
       flushPara();
       flushList();
     } else if ((m = /^(#{1,3})\s+(.*)$/.exec(line))) {
       flushPara();
       flushList();
-      blocks.push({ type: 'heading', attrs: { key: blockKey(), textAlign: 'left', level: (m[1] ?? '#').length }, content: inlineNodes(m[2] ?? '') });
+      blocks.push({ type: 'heading', attrs: { key: blockKey(), textAlign: 'left', level: Math.min(2, (m[1] ?? '#').length) }, content: inlineNodes(m[2] ?? '') });
     } else if ((m = /^\s*[-*+]\s+\[( |x|X)\]\s+(.*)$/.exec(line))) {
       flushPara();
       addItem('taskList', { type: 'taskItem', attrs: { key: blockKey(), checked: m[1] !== ' ' }, content: [paragraph(m[2] ?? '', blockKey)] });
@@ -120,6 +138,7 @@ export function textToDoc(text: string, blockKey: Key): TipTapNode {
       para.push(line.trim());
     }
   }
+  flushFence();
   flushPara();
   flushList();
   if (!blocks.length) blocks.push(paragraph('', blockKey));
@@ -147,6 +166,8 @@ export function docToText(node: unknown): string {
       return `${'#'.repeat(Number(n.attrs?.level) || 1)} ${inner.join('')}`;
     case 'blockquote':
       return `> ${inner.join('\n')}`;
+    case 'codeBlock':
+      return `\`\`\`${typeof n.attrs?.language === 'string' ? n.attrs.language : ''}\n${inner.join('')}\n\`\`\``;
     case 'listItem':
     case 'taskItem':
       return inner.join('\n');

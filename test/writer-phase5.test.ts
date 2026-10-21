@@ -65,12 +65,19 @@ describe('moveElement', () => {
     await expect(writer().moveElement({ element: 'TASKONE000001', parent: BOARD, x: 1, y: 1 })).rejects.toThrow(/Aufgaben/);
     await expect(writer().moveElement({ element: NOTE, parent: 'TASKLIST00001' })).rejects.toThrow(/nur Aufgaben/);
     await expect(writer().moveElement({ element: COL, parent: 'TASKLIST00001' })).rejects.toThrow(/nur Aufgaben/);
-    await expect(writer().moveElement({ element: SUB, parent: COL })).rejects.toThrow(/Boards können nur auf ein anderes Board/);
     await expect(writer().moveElement({ element: SUB, parent: 'NESTEDBOARD01', x: 1, y: 1 })).rejects.toThrow(/Nachfahren/);
     await expect(writer().moveElement({ element: BOARD, parent: SUB, x: 1, y: 1 })).rejects.toThrow(/Home-Board ist gesperrt/);
     expect(be.actions).toEqual([]);
     await expect(writer().moveElement({ element: COL, parent: SUB, x: 1, y: 1 })).resolves.toBeDefined();
+    await expect(writer().moveElement({ element: 'TASKLIST00002', parent: 'TASKLIST00001' })).rejects.toThrow(/nur Aufgaben/);
     expect(types().filter((t) => t === 'ELEMENT_MOVE_MULTI')).toHaveLength(1);
+  });
+
+  it('erlaubt Boards in Spalten (laut Hilfe-Center), Spalten aber nicht in Spalten', async () => {
+    const result = await writer().moveElement({ element: SUB, parent: COL });
+    expect(result).toMatchObject({ persisted: true, type: 'BOARD', to: { parentId: COL, section: 'INBOX', index: 1 } });
+    await expect(writer().moveElement({ element: 'TASKLIST00001', parent: COL })).resolves.toBeDefined();
+    await expect(writer().moveElement({ element: COL, parent: COL })).rejects.toThrow(/in sich selbst/);
   });
 
   it('sperrt Home und Wurzel-Boards und lehnt Unbekanntes ab', async () => {

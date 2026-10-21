@@ -8,6 +8,7 @@ Lokaler MCP-Server, mit dem Claude Milanote-Boards anlegen, befüllen, anordnen 
 - [`docs/phase2.md`](docs/phase2.md): Lese-Tools, Abnahmetest Lesen
 - [`docs/phase3.md`](docs/phase3.md): Schreib-Tools, Schutzregeln, **Abnahmetest**, Fehlerbilder
 - [`docs/phase5.md`](docs/phase5.md): Layout-Engine, `compose_board`, Größenmodell und seine Unsicherheiten, **Abnahmetest**
+- [`docs/official-sources.md`](docs/official-sources.md): **Abgleich mit offiziellen Milanote-Angaben** (Hilfe-Center, Versionshinweise, Bedingungen), Korrekturen, was offiziell nicht belegbar ist
 - [`docs/protocol.md`](docs/protocol.md): Protokollwissen, Quellen, Nutzungsbedingungen, offene Punkte (Phase 0)
 - [`tools/probe/`](tools/probe/README.md): passives Mitschnitt-Skript mit Schwärzung
 
@@ -39,4 +40,4 @@ tools/probe/  Mitschnitt (Phase 0)
 test/
 ```
 
-Inoffiziell, nicht mit Milanote verbunden. Zu den Nutzungsbedingungen siehe `docs/protocol.md`, Abschnitt 2.
+Inoffiziell, nicht mit Milanote verbunden. Zu den Nutzungsbedingungen siehe `docs/official-sources.md`, Abschnitt 2.

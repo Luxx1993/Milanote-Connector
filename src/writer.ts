@@ -525,8 +525,8 @@ export class Writer {
   }
 
   /**
-   * Verschiebt Elemente in den Papierkorb ihres Boards. Wiederherstellen geht in Milanote
-   * (Papierkorb des Boards). Gesperrt: die Wurzel-Boards (Home, Schnellnotizen) und, solange Home nicht
+   * Verschiebt Elemente in den Papierkorb (technisch `<boardId>-trash`, laut milanote-plus-plus). Milanote hält
+   * gelöschte Inhalte 3 Monate und lässt sie per Drag zurück aufs Board ziehen (Hilfe-Center). Gesperrt: die Wurzel-Boards (Home, Schnellnotizen) und, solange Home nicht
    * freigegeben ist, alles, was direkt im Home-Board liegt.
    */
   trash(input: { elements: string[] }): Promise<{ trashed: { id: string; type: string; boardId: string }[]; skipped: { id: string; reason: string }[]; persisted: boolean; warnings: string[] }> {

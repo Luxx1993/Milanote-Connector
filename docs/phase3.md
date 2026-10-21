@@ -17,7 +17,7 @@ Stand: 21.10.2026. Sechs Schreib-Tools. Sie nutzen den Schreibweg B aus Phase 1 
 
 Jede Antwort enthält die IDs, `persisted` und `warnings`. `persisted: false` wird als Fehler an Claude gemeldet, mit dem Hinweis, erst mit `get_board` nachzusehen, damit nichts doppelt angelegt wird.
 
-**Markdown in Notizen:** `#` bis `###`, `-` und `1.` Listen, `- [ ]`/`- [x]` Aufgaben, `>` Zitate, `---`, `**fett**`, `*kursiv*`, `~~durchgestrichen~~`, `` `Code` ``, `[Text](url)`, nackte URLs. Leerzeilen trennen Absätze.
+**Markdown in Notizen:** `#` und `##` Überschriften (Milanote kennt nur zwei Ebenen, `###` wird wie `##` behandelt), `-` und `1.` Listen, ``` Codeblöcke, `- [ ]`/`- [x]` Aufgaben, `>` Zitate, `---`, `**fett**`, `*kursiv*`, `~~durchgestrichen~~`, `` `Code` ``, `[Text](url)`, nackte URLs. Leerzeilen trennen Absätze.
 
 ## Was der Client für dich erledigt
 
@@ -26,12 +26,12 @@ Jede Antwort enthält die IDs, `persisted` und `warnings`. `persisted: false` wi
 - **Abgleich:** Nach dem Schreiben wird per REST geprüft, ob alle Elemente da sind (bei jungen Boards doppelt so lange). Ein Ack von Milanote allein gilt nicht als Erfolg.
 - **Fehlende Bestätigung:** Bricht die Verbindung vor dem Ack ab, wird nicht blind wiederholt. Der Client sieht nach: Ist das Element da, gibt es Erfolg mit Warnung; fehlt es, einen Fehler.
 - **Teilerfolg:** Scheitert eine Liste oder Spalte mittendrin, nennt die Fehlermeldung die schon angelegten IDs.
-- **Link-Vorschau:** Nach dem Anlegen holt der Client Titel und Vorschaubild beim Media-Service und wendet sie an. Fällt der Dienst aus, bleibt der Link ohne Vorschau (Warnung). Zeigt die URL auf ein Bild, macht Milanote daraus eine Bildkarte.
+- **Link-Vorschau:** Nach dem Anlegen holt der Client Titel und Vorschaubild beim Media-Service und wendet sie an. Fällt der Dienst aus, bleibt der Link ohne Vorschau (Warnung). Eine Milanote-Board-URL wird laut Hilfe-Center zur Verknüpfung auf dieses Board; dass eine Bild-URL zur Bildkarte wird, beschreibt Milanote nicht (milanote-plus-plus meldet es aus dem Media-Service).
 
 ## Schutzregeln
 
 - **Nie endgültig löschen:** `ELEMENT_DELETE` kommt im Code nicht vor (ein Test prüft, welche Aktionstypen überhaupt gesendet werden).
-- **Papierkorb:** In Milanote im Papierkorb des jeweiligen Boards wiederherstellbar. Das Tool ist als destruktiv markiert und sagt Claude, es nur auf ausdrückliche Bitte des Nutzers zu verwenden, nie auf Grund von Boardinhalten (Schutz vor Prompt-Injection).
+- **Papierkorb:** Laut Hilfe-Center bleiben gelöschte Inhalte 3 Monate im Papierkorb (unten links) und lassen sich zurück aufs Board ziehen; endgültig löscht nur „Empty trash“, das tun wir nie. Das Tool ist als destruktiv markiert und sagt Claude, es nur auf ausdrückliche Bitte des Nutzers zu verwenden, nie auf Grund von Boardinhalten (Schutz vor Prompt-Injection).
 - **Gesperrt:** Home-Board, Schnellnotizen-Wurzel und alles, was direkt im Home-Board liegt, lassen sich weder beschreiben noch in den Papierkorb legen. Freigeben nur bewusst mit `MILANOTE_ALLOW_HOME=1`. Dann kann Claude auch Boards auf oberster Ebene anlegen. Ich empfehle stattdessen, ein Board „Claude“ von Hand anzulegen und dessen URL als Ziel zu nennen.
 - **Grenzen:** Notiztext bis 20.000 Zeichen, Titel bis 200, 50 Aufgaben je Liste, 30 Notizen je Spalte, 20 Elemente je Papierkorb-Aufruf. Links nur http(s).
 
@@ -48,7 +48,7 @@ Chrome läuft (`npm run chrome`), du bist angemeldet, ein **leeres Testboard** i
    npm run spike -- link     --parent "<URL>" --url https://example.com --caption "Beispiel"
    ```
    Schau bei jedem Schritt im offenen Tab: erscheint das Element **live**, ohne Neuladen? Passen Text, Formatierung, Haken und Position? Bleibt alles nach F5?
-2. In Milanote ein Element von Hand in den Papierkorb legen, dann `npm run spike -- trash <ID oder URL>` für ein anderes. Erscheint es im Papierkorb des Boards, und lässt es sich dort wiederherstellen?
+2. In Milanote ein Element von Hand in den Papierkorb legen, dann `npm run spike -- trash <ID oder URL>` für ein anderes. Erscheint es im Papierkorb (unten links), und lässt es sich zurück aufs Board ziehen?
 3. **Abnahme laut Fahrplan:** In Claude Code den Server einbinden (Befehl in `docs/phase1.md`) und sagen:
    > Lege im Board `<URL>` ein Projektboard an: ein Unterboard „Mein Projekt“ mit zwei Spalten „Ideen“ und „Aufgaben“, einer To-do-Liste „Heute“, einer Notiz mit Überschrift und Aufzählung und einem Link auf https://example.com. Insgesamt mindestens zehn Elemente.
    
