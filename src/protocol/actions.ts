@@ -74,6 +74,72 @@ export function elementCreate(ctx: ActionContext, spec: CreateSpec): Action {
   });
 }
 
+export interface UpdateSpec {
+  id: string;
+  elementType: string;
+  boardId: string;
+  /** `meta.versionId` des Elements vor der Änderung (Milanote prüft die Reihenfolge der Versionen). */
+  previousVersionId: string | null;
+  changes: Record<string, unknown>;
+}
+
+export function elementUpdate(ctx: ActionContext, spec: UpdateSpec): Action {
+  return envelope(ctx, {
+    type: 'ELEMENT_UPDATE',
+    updates: [{ id: spec.id, changes: spec.changes, meta: { modifiedVersionId: spec.previousVersionId, versionId: ctx.ids.nextVersionId() } }],
+    recalculateChannels: false,
+    activity: { track: false, boardId: spec.boardId, elementTypes: { [spec.id]: spec.elementType } },
+    channels: [...new Set([spec.boardId, spec.id])],
+  });
+}
+
+/** Wandelt ein Element um, z. B. LINK -> IMAGE nach der Link-Vorschau. */
+export function elementSetType(ctx: ActionContext, spec: { id: string; elementType: string; boardId: string; changes: Record<string, unknown> }): Action {
+  return envelope(ctx, {
+    type: 'ELEMENT_SET_TYPE',
+    id: spec.id,
+    elementType: spec.elementType,
+    changes: spec.changes,
+    activity: { track: false, boardId: spec.boardId },
+    channels: [spec.boardId],
+  });
+}
+
+export interface TrashItem {
+  id: string;
+  elementType: string;
+  /** Ursprünglicher Ort, wird für „Wiederherstellen“ gespeichert. */
+  from: { parentId: string; section: string; position: unknown };
+}
+
+/**
+ * Verschiebt Elemente in den Papierkorb ihres Boards (`<boardId>-trash`). Das ist die einzige
+ * Art zu entfernen; ELEMENT_DELETE (endgültig) wird nirgends gesendet.
+ */
+export function elementsToTrash(ctx: ActionContext, boardId: string, items: TrashItem[]): Action {
+  const now = (ctx.now ?? Date.now)();
+  const trash = `${boardId}-trash`;
+  return envelope(ctx, {
+    type: 'ELEMENT_MOVE_MULTI',
+    moves: items.map((item) => ({
+      id: item.id,
+      location: { parentId: trash, section: 'TRASH', position: { addedDate: now, restoreLocation: item.from } },
+      from: item.from,
+    })),
+    moveOperation: 'TRASH',
+    monitoring: { operation: 'TRASH' },
+    activity: {
+      track: false,
+      sourceBoardId: boardId,
+      isSourceShared: false,
+      destinationBoardId: trash,
+      isDestinationShared: false,
+      elementTypes: Object.fromEntries(items.map((item) => [item.id, item.elementType])),
+    },
+    channels: [boardId, trash],
+  });
+}
+
 /** Ack-Antwort prüfen: Milanote antwortet mit `[{status: 200}]`. */
 export function ackStatus(args: unknown[]): number | undefined {
   const first = args[0];

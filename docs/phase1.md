@@ -47,10 +47,10 @@ Im neuen Chrome-Fenster einmal bei Milanote anmelden (inklusive 2FA). Das Profil
 1. In Milanote ein leeres **Testboard** anlegen (nicht das Home-Board) und im Chrome-Fenster öffnen. Board-URL kopieren.
 2. `npm run spike -- check`
    Erwartet: `Angemeldet: <Name> · Home-Board …` und `Socket-Handshake ok`. Es wird nichts geschrieben. Ein Hintergrund-Tab „Milanote-Connector (offen lassen)“ erscheint.
-3. `npm run spike -- note --board "<Board-URL>" --text "Hallo aus Claude"`
-   Erwartet: `Ack von Milanote: ja`, `Per REST gespeichert: ja`.
+3. `npm run spike -- note --parent "<Board-URL>" --text "Hallo aus Claude"`
+   Erwartet: `persisted: true` (per REST bestätigt).
 4. **Abnahme:** Die Notiz erscheint ohne Neuladen im offenen Board-Tab rechts neben vorhandenem Inhalt und ist nach F5 noch da.
-5. Optional mit Position: `npm run spike -- note --board "<Board-URL>" --text "Hier" --x 0 --y 40`
+5. Optional mit Position: `npm run spike -- note --parent "<Board-URL>" --text "Hier" --x 0 --y 40`
 
 Bitte melde mir für Schritt 3 und 4 je: ok, nicht ok (mit Ausgabe), oder „erst nach F5 sichtbar“. Mit `--verbose` zeigt das CLI Verbindungsdetails.
 

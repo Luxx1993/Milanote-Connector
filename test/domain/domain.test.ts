@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { docToText, textToDoc } from '../../src/domain/richtext.ts';
 import { CARD_WIDTH, GAP, SCORE_STEP, nextCanvasPosition } from '../../src/domain/placement.ts';
-import { canvasChildren, parseBoardRef } from '../../src/milanote.ts';
+import { canvasChildrenOf } from '../../src/domain/hierarchy.ts';
+import { parseBoardRef } from '../../src/milanote.ts';
 
 const key = () => 'k1234';
 
@@ -49,9 +50,9 @@ describe('nextCanvasPosition', () => {
   });
 });
 
-describe('canvasChildren', () => {
+describe('canvasChildrenOf', () => {
   it('nimmt nur direkte Kinder auf der Fläche', () => {
-    const children = canvasChildren(
+    const children = canvasChildrenOf(
       {
         B: { _id: 'B', elementType: 'BOARD' },
         a: { _id: 'a', elementType: 'CARD', location: { parentId: 'B', section: 'CANVAS', position: { x: 1, y: 2, score: 3 } } },

@@ -5,9 +5,8 @@ import { CdpConnection, browserWsUrl } from './session/cdp.ts';
 import { MILANOTE_ORIGIN, PageBridge } from './session/bridge.ts';
 import { SocketClient, SocketError } from './protocol/socket.ts';
 import { IdGenerator } from './protocol/ids.ts';
-import { PLATFORM, ackStatus, elementCreate, type Action, type ActionContext, type CanvasPosition } from './protocol/actions.ts';
-import { textToDoc } from './domain/richtext.ts';
-import { nextCanvasPosition, type CanvasChild } from './domain/placement.ts';
+import { PLATFORM, ackStatus, type Action, type ActionContext } from './protocol/actions.ts';
+import { Writer, type WriteBackend } from './writer.ts';
 import { holderBoard, isHidden, normalizeBoard, titleOf, type BoardView, type RawElement } from './domain/board.ts';
 import { MilanoteError } from './errors.ts';
 
@@ -42,26 +41,6 @@ export interface ConnectOptions {
   log?: (message: string) => void;
 }
 
-export interface CreateNoteInput {
-  boardId: string;
-  text: string;
-  x?: number;
-  y?: number;
-  /** Schreiben ins Home-Board ist ohne ausdrückliche Freigabe gesperrt. */
-  allowHome?: boolean;
-}
-
-export interface CreatedElement {
-  id: string;
-  boardId: string;
-  position: CanvasPosition;
-  /** Milanote hat die Aktion mit Status 200 bestätigt. */
-  acknowledged: boolean;
-  /** Das Element ist danach per REST lesbar (unter dem richtigen Board, nicht im Papierkorb). */
-  persisted: boolean;
-  boardUrl: string;
-}
-
 const ELEMENT_ID = /^[0-9A-Za-z]{10,20}$/;
 
 /** Akzeptiert eine Board-ID oder eine Milanote-URL (https://app.milanote.com/<id>/…). */
@@ -77,7 +56,10 @@ export function parseBoardRef(input: string): string {
   return candidate;
 }
 
-export class MilanoteClient {
+export class MilanoteClient implements WriteBackend {
+  readonly origin = MILANOTE_ORIGIN;
+  /** Schreib-Operationen (Board, Notiz, Link, To-do-Liste, Spalte, Papierkorb). */
+  readonly write: Writer;
   private readonly ids = new IdGenerator();
   private user: MilanoteUser | undefined;
   private socketClient: SocketClient | undefined;
@@ -86,7 +68,14 @@ export class MilanoteClient {
     private readonly cdp: CdpConnection,
     private readonly bridge: PageBridge,
     private readonly log: (message: string) => void,
-  ) {}
+  ) {
+    const settle = Number(process.env.MILANOTE_BOARD_SETTLE_MS);
+    this.write = new Writer(this, {
+      allowHome: process.env.MILANOTE_ALLOW_HOME === '1',
+      ...(Number.isFinite(settle) && process.env.MILANOTE_BOARD_SETTLE_MS ? { boardSettleMs: settle } : {}),
+      log,
+    });
+  }
 
   static async connect(options: ConnectOptions = {}): Promise<MilanoteClient> {
     const log = options.log ?? (() => undefined);
@@ -222,30 +211,6 @@ export class MilanoteClient {
     return data.elements?.[id];
   }
 
-  async createNote(input: CreateNoteInput): Promise<CreatedElement> {
-    const user = await this.whoami();
-    const boardId = parseBoardRef(input.boardId);
-    if (boardId === user.rootBoardId && !input.allowHome) {
-      throw new MilanoteError('args', 'Das ist das Home-Board. Schreiben dorthin ist gesperrt; bitte ein Test- oder Unterboard angeben.');
-    }
-    if (!input.text.trim()) throw new MilanoteError('args', 'Der Notiztext ist leer');
-    const { board, elements } = await this.getBoard(boardId);
-    if (board.elementType !== 'BOARD') throw new MilanoteError('args', `${boardId} ist kein Board, sondern ${board.elementType}`);
-
-    const position = nextCanvasPosition(canvasChildren(elements, boardId), { x: input.x, y: input.y });
-    const id = this.ids.elementId();
-    const action = elementCreate(this.context(user), {
-      id,
-      elementType: 'CARD',
-      boardId,
-      location: { parentId: boardId, section: 'CANVAS', position },
-      content: { textContent: textToDoc(input.text, () => this.ids.blockKey()) },
-    });
-    await this.sendAction(action);
-    const persisted = await this.waitForElement(id, boardId);
-    return { id, boardId, position, acknowledged: true, persisted, boardUrl: `${MILANOTE_ORIGIN}/${boardId}` };
-  }
-
   /** Testet nur den Socket-Handshake (ohne zu schreiben). */
   async checkSocket(): Promise<void> {
     await this.whoami();
@@ -256,7 +221,7 @@ export class MilanoteClient {
     }
   }
 
-  private async sendAction(action: Action): Promise<void> {
+  async sendAction(action: Action): Promise<void> {
     let args: unknown[];
     try {
       args = await this.socket().emit('action', action);
@@ -268,17 +233,6 @@ export class MilanoteClient {
     if (status !== 200) {
       throw new MilanoteError('rejected', `Milanote hat ${action.type} abgelehnt: ${JSON.stringify(args).slice(0, 300)}`);
     }
-  }
-
-  /** Prüft per REST, ob das Element gespeichert ist (Ack 200 allein reicht laut milanote-skill nicht). */
-  private async waitForElement(id: string, parentId: string, attempts = 6, delayMs = 500): Promise<boolean> {
-    for (let i = 0; i < attempts; i += 1) {
-      const element = await this.getElement(id).catch(() => undefined);
-      const section = element?.location?.section;
-      if (element && element.location?.parentId === parentId && section !== 'TRASH' && section !== 'DELETED') return true;
-      await new Promise((r) => setTimeout(r, delayMs));
-    }
-    return false;
   }
 
   private socket(): SocketClient {
@@ -293,8 +247,23 @@ export class MilanoteClient {
     return this.socketClient;
   }
 
-  private context(user: MilanoteUser): ActionContext {
+  actionContext(user: { id: string }): ActionContext {
     return { userId: user.id, ids: this.ids, platform: PLATFORM };
+  }
+
+  parseRef(ref: string): string {
+    return parseBoardRef(ref);
+  }
+
+  /** Elemente samt Elternkette (bis zum Wurzel-Board). */
+  async loadWithAncestors(ids: string[]): Promise<Record<string, RawElement>> {
+    const query = new URLSearchParams({ ids: ids.join(','), loadAncestors: 'true' });
+    const data = await this.rest<{ elements?: Record<string, RawElement> }>('GET', `/api/elements?${query}`);
+    return data.elements ?? {};
+  }
+
+  postJson<T>(path: string, body: unknown): Promise<T> {
+    return this.rest<T>('POST', path, body);
   }
 
   private async rest<T>(method: string, path: string, body?: unknown, retried = false): Promise<T> {
@@ -321,17 +290,6 @@ export class MilanoteClient {
       throw new MilanoteError('http', `Milanote ${method} ${path.split('?')[0]} lieferte kein JSON (HTTP ${res.status})`);
     }
   }
-}
-
-export function canvasChildren(elements: Record<string, RawElement>, boardId: string): CanvasChild[] {
-  const out: CanvasChild[] = [];
-  for (const el of Object.values(elements)) {
-    if (el.location?.parentId !== boardId || el.location.section !== 'CANVAS') continue;
-    const p = el.location.position ?? {};
-    const width = Number(el.content?.width);
-    out.push({ x: p.x ?? 0, y: p.y ?? 0, score: p.score ?? 0, width: Number.isFinite(width) && width > 0 ? width : undefined });
-  }
-  return out;
 }
 
 /** Form laut luscoma/milanote-mcp; unbekannte Felder werden ignoriert. */
