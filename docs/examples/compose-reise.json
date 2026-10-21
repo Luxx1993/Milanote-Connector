@@ -1,0 +1,42 @@
+{
+  "layout": "columns",
+  "center": "Reise nach Lissabon",
+  "groups": [
+    {
+      "title": "Anreise",
+      "items": [
+        "Flug **TP 123** um 8:15 ab Berlin",
+        "Transfer vom Flughafen: Metro Linie Rot bis Alameda, dann umsteigen. Alternativ Taxi (ca. 20 Euro, 25 Minuten).",
+        { "type": "link", "url": "https://www.flytap.com", "caption": "Buchung" },
+        "Koffer: Handgepäck reicht"
+      ]
+    },
+    {
+      "title": "Unterkunft",
+      "items": [
+        "Hotel im Alfama-Viertel",
+        { "type": "link", "url": "https://example.com/hotel" },
+        "# Check-in\n\nab 15 Uhr, spätes Check-in möglich\n\n- Schlüssel an der Rezeption\n- Frühstück inklusive",
+        "Zimmer mit Blick auf den Tejo"
+      ]
+    },
+    {
+      "title": "Programm",
+      "items": [
+        { "type": "todo", "title": "Tag 1", "tasks": ["Belém besuchen", { "text": "Pastéis de Belém probieren", "done": true }, "Tram 28 fahren"] },
+        "Tag 2: Sintra, Zug ab Rossio",
+        { "type": "todo", "title": "Tag 3", "tasks": ["Oceanário", "Abendessen im Bairro Alto"] },
+        "Fado-Abend reservieren",
+        { "type": "note", "text": "Wetter prüfen" }
+      ]
+    },
+    {
+      "title": "Packliste",
+      "items": [
+        { "type": "todo", "tasks": ["Reisepass", "Ladekabel", "Sonnencreme", "Regenjacke", "Bequeme Schuhe"] },
+        "Adapter nicht nötig (EU)",
+        "Reiseapotheke"
+      ]
+    }
+  ]
+}
