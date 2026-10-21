@@ -1,7 +1,11 @@
-// Spike-CLI (Phase 1 bis 3): Verbindung prüfen, Boards lesen, Elemente anlegen und in den Papierkorb legen.
+// Spike-CLI (Phase 1 bis 5): Verbindung prüfen, Boards lesen, Elemente anlegen, ändern, verschieben, anordnen.
 // Schreibbefehle landen nie im Home-Board (siehe MILANOTE_ALLOW_HOME in docs/phase3.md).
 
+import { readFileSync, writeFileSync } from 'node:fs';
 import { MilanoteClient } from '../milanote.ts';
+import { planCompose, type ComposeSpec } from '../layout/compose.ts';
+import { loadMetrics } from '../layout/metrics.ts';
+import { renderAscii } from '../layout/preview.ts';
 import { MilanoteError } from '../errors.ts';
 import { launchChrome } from '../session/chrome.ts';
 import type { TaskInput } from '../writer.ts';
@@ -25,11 +29,19 @@ Schreiben (Ziel ist ein Board oder, wo es passt, eine Spalte; jeweils optional -
   npm run spike -- column   --parent <id|url> --title "Spalte" [--note "Text" ...]
   npm run spike -- trash    <id|url> [<id|url> ...]   (nur in den Papierkorb, nie endgültig)
 
+Ändern, verschieben, anordnen
+  npm run spike -- update   <id|url> [--text "…"] [--title "…"] [--done true|false] [--caption "…"]
+  npm run spike -- move     <id|url> [--parent <id|url>] [--x <n> --y <n>]
+  npm run spike -- resize   <id|url> --width <n>             (experimentell)
+  npm run spike -- plan     --file spec.json [--ascii]       Layout berechnen, OHNE Browser und ohne zu schreiben
+  npm run spike -- compose  --parent <id|url> --file spec.json [--title "Neues Unterboard"] [--x <n> --y <n>]
+  npm run spike -- measure  <board-url> [--out metrics.json] Größen im sichtbaren Board messen (liest nur)
+
 Optionen: --port <n> (Standard 9222), --verbose
 `;
 
-const COMMANDS = ['check', 'boards', 'board', 'tree', 'search', 'newboard', 'note', 'link', 'todo', 'column', 'trash'];
-const FLAGS_WITH_VALUE = new Set(['--port', '--parent', '--board', '--root', '--depth', '--title', '--text', '--url', '--caption', '--task', '--done', '--note', '--x', '--y']);
+const COMMANDS = ['check', 'boards', 'board', 'tree', 'search', 'newboard', 'note', 'link', 'todo', 'column', 'trash', 'update', 'move', 'resize', 'plan', 'compose', 'measure'];
+const FLAGS_WITH_VALUE = new Set(['--port', '--parent', '--board', '--root', '--depth', '--title', '--text', '--url', '--caption', '--task', '--done', '--note', '--x', '--y', '--width', '--file', '--out']);
 
 function option(args: string[], name: string): string | undefined {
   const index = args.indexOf(name);
@@ -53,6 +65,29 @@ function positional(args: string[]): string[] {
   return args.filter((arg, i) => !arg.startsWith('--') && !FLAGS_WITH_VALUE.has(args[i - 1] ?? ''));
 }
 
+function first(args: string[], what: string): string {
+  const value = positional(args)[0];
+  if (!value) throw new MilanoteError('args', `${what} fehlt`);
+  return value;
+}
+
+function readSpec(file: string): ComposeSpec {
+  try {
+    return JSON.parse(readFileSync(file, 'utf8')) as ComposeSpec;
+  } catch (error) {
+    throw new MilanoteError('args', `${file} ist keine lesbare JSON-Datei: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+/** Layout berechnen und anzeigen. Braucht weder Browser noch Konto und schreibt nichts. */
+function plan(args: string[]): void {
+  const spec = readSpec(required(args, '--file'));
+  const result = planCompose(spec, loadMetrics());
+  console.log(`Layout ${spec.layout}: ${result.count} Elemente, Block ${result.bounds.w} × ${result.bounds.h} Einheiten (geschätzt)`);
+  if (args.includes('--ascii')) console.log(`\n${renderAscii(result)}\n`);
+  else console.log(JSON.stringify(result.steps.map((st) => ({ key: st.key, type: st.type, ...(st.rel ? { x: st.rel.x, y: st.rel.y, w: st.rel.w, h: st.rel.h } : { in: st.parentKey, index: st.index }) })), null, 2));
+}
+
 function required(args: string[], name: string, alias?: string): string {
   const value = option(args, name) ?? (alias ? option(args, alias) : undefined);
   if (!value) throw new MilanoteError('args', `Bitte ${name} angeben`);
@@ -73,6 +108,7 @@ async function main(): Promise<void> {
     console.log(HELP);
     return;
   }
+  if (command === 'plan') return plan(args);
 
   const client = await MilanoteClient.connect({ port, log });
   try {
@@ -112,6 +148,32 @@ async function main(): Promise<void> {
       }
       case 'column':
         return report(await client.write.addColumn({ parent: parent(), title: required(args, '--title'), notes: options(args, '--note'), ...at }));
+      case 'update': {
+        const done = option(args, '--done');
+        if (done !== undefined && done !== 'true' && done !== 'false') throw new MilanoteError('args', '--done erwartet true oder false');
+        return report(await client.write.updateElement({ element: first(args, 'Element-ID oder URL'), text: option(args, '--text'), title: option(args, '--title'), caption: option(args, '--caption'), done: done === undefined ? undefined : done === 'true' }));
+      }
+      case 'move':
+        return report(await client.write.moveElement({ element: first(args, 'Element-ID oder URL'), parent: option(args, '--parent'), ...at }));
+      case 'resize': {
+        const width = numberOption(args, '--width');
+        if (width === undefined) throw new MilanoteError('args', 'Bitte --width angeben');
+        return report(await client.write.resizeElement({ element: first(args, 'Element-ID oder URL'), width }));
+      }
+      case 'compose': {
+        const spec = readSpec(required(args, '--file'));
+        return report(await client.write.composeBoard({ parent: parent(), title: option(args, '--title'), spec, ...at }));
+      }
+      case 'measure': {
+        const result = await client.measureBoard(first(args, 'Board-URL'));
+        print(result);
+        const out = option(args, '--out');
+        if (out) {
+          writeFileSync(out, `${JSON.stringify(result.suggestedMetrics, null, 2)}\n`, { mode: 0o600 });
+          console.error(`Vorschlag gespeichert: ${out}\nVerwenden mit: MILANOTE_METRICS_FILE=${out}`);
+        }
+        return;
+      }
       case 'trash': {
         const result = await client.write.trash({ elements: positional(args) });
         print(result);

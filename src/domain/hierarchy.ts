@@ -48,11 +48,16 @@ export function childrenIn(elements: Elements, parentId: string, section: 'CANVA
   return Object.values(elements).filter((el) => el.location?.parentId === parentId && el.location.section === section && !isHidden(el) && el.elementType !== 'SKELETON');
 }
 
-export function canvasChildrenOf(elements: Elements, boardId: string): CanvasChild[] {
+/**
+ * Kinder auf der Fläche mit Position und Breite. Ohne gespeicherte Breite fragt `widthOf` (Größenmodell) nach einer
+ * Schätzung; fehlt auch die, rechnet die Platzierung mit der Standardkartenbreite.
+ */
+export function canvasChildrenOf(elements: Elements, boardId: string, widthOf?: (el: RawElement) => number | undefined): CanvasChild[] {
   return childrenIn(elements, boardId, 'CANVAS').map((el) => {
     const p = el.location?.position ?? {};
-    const width = Number(el.content?.width);
-    return { x: p.x ?? 0, y: p.y ?? 0, score: p.score ?? 0, width: Number.isFinite(width) && width > 0 ? width : undefined };
+    const stored = Number(el.content?.width);
+    const width = Number.isFinite(stored) && stored > 0 ? stored : widthOf?.(el);
+    return { x: p.x ?? 0, y: p.y ?? 0, score: p.score ?? 0, width };
   });
 }
 
@@ -61,4 +66,47 @@ export function nextInboxPosition(elements: Elements, parentId: string): InboxPo
   const taken = childrenIn(elements, parentId, 'INBOX').map((el) => el.location?.position?.index ?? -1);
   const index = taken.length ? Math.max(...taken) + 1 : 0;
   return { index, score: index * SCORE_STEP };
+}
+
+export interface DropTarget {
+  parentId: string;
+  type: 'BOARD' | 'COLUMN' | 'TASK_LIST';
+  /** Board, auf dessen Kanal geschrieben wird */
+  boardId: string;
+}
+
+/**
+ * Prüft, ob `elementId` dorthin verschoben werden darf (Regeln wie in milanote-plus-plus):
+ * Boards nur auf Boards, Spalten nur auf Boards, Aufgaben nur in To-do-Listen und umgekehrt,
+ * nie in sich selbst oder einen Nachfahren.
+ */
+export function dropTarget(elements: Elements, elementId: string, targetId: string): DropTarget {
+  const el = elements[elementId];
+  const target = elements[targetId];
+  if (!el) throw new MilanoteError('not_found', `Element ${elementId} nicht gefunden oder kein Zugriff`);
+  if (!target || target.elementType === 'SKELETON') throw new MilanoteError('not_found', `Ziel ${targetId} nicht gefunden oder kein Zugriff`);
+  if (isHidden(target)) throw new MilanoteError('args', `Ziel ${targetId} liegt im Papierkorb`);
+  const type = target.elementType;
+  if (type !== 'BOARD' && type !== 'COLUMN' && type !== 'TASK_LIST') {
+    throw new MilanoteError('args', `Ziel ${targetId} ist ein ${type}; verschoben werden kann nur auf ein Board, in eine Spalte oder in eine To-do-Liste`);
+  }
+  if (targetId === elementId || isAncestor(elements, elementId, targetId)) throw new MilanoteError('args', 'Ein Element kann nicht in sich selbst oder in einen eigenen Nachfahren verschoben werden');
+  if (el.elementType === 'TASK' && type !== 'TASK_LIST') throw new MilanoteError('args', 'Aufgaben können nur in eine To-do-Liste verschoben werden');
+  if (type === 'TASK_LIST' && el.elementType !== 'TASK') throw new MilanoteError('args', `In eine To-do-Liste passen nur Aufgaben, kein ${el.elementType}`);
+  if (type === 'COLUMN' && el.elementType === 'COLUMN') throw new MilanoteError('args', 'Spalten können nicht in Spalten liegen');
+  if (el.elementType === 'COLUMN' && type !== 'BOARD') throw new MilanoteError('args', 'Spalten können nur auf ein Board verschoben werden');
+  if (el.elementType === 'BOARD' && type !== 'BOARD') throw new MilanoteError('args', 'Boards können nur auf ein anderes Board verschoben werden');
+  const boardId = type === 'BOARD' ? targetId : boardAbove(elements, targetId);
+  if (!boardId) throw new MilanoteError('not_found', `Zu ${targetId} wurde kein Board gefunden`);
+  return { parentId: targetId, type, boardId };
+}
+
+/** Liegt `maybeAncestor` irgendwo oberhalb von `id`? */
+export function isAncestor(elements: Elements, maybeAncestor: string, id: string): boolean {
+  let parent = elements[id]?.location?.parentId;
+  for (let hops = 0; parent && hops < 30; hops += 1) {
+    if (parent === maybeAncestor) return true;
+    parent = elements[parent]?.location?.parentId;
+  }
+  return false;
 }

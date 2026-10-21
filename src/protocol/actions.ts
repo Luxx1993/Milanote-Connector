@@ -105,11 +105,47 @@ export function elementSetType(ctx: ActionContext, spec: { id: string; elementTy
   });
 }
 
+export interface Place {
+  parentId: string;
+  section: string;
+  position: unknown;
+}
+
+export interface MoveItem {
+  id: string;
+  elementType: string;
+  from: Place;
+  to: Place;
+}
+
+/**
+ * Verschiebt Elemente (ELEMENT_MOVE_MULTI, Form laut milanote-plus-plus). `operation` ist `DROP` für normales
+ * Verschieben und `TRASH` für den Papierkorb. milanote-skill nennt die Aktion `ELEMENT_MOVE` mit `location` auf
+ * oberster Ebene; welche Form gilt, klärt der Abnahmetest (docs/protocol.md 5c).
+ */
+export function elementsMove(ctx: ActionContext, spec: { operation: 'DROP' | 'TRASH'; sourceBoardId: string; destinationBoardId: string; items: MoveItem[] }): Action {
+  return envelope(ctx, {
+    type: 'ELEMENT_MOVE_MULTI',
+    moves: spec.items.map((item) => ({ id: item.id, location: item.to, from: item.from })),
+    moveOperation: spec.operation,
+    monitoring: { operation: spec.operation },
+    activity: {
+      track: false,
+      sourceBoardId: spec.sourceBoardId,
+      isSourceShared: false,
+      destinationBoardId: spec.destinationBoardId,
+      isDestinationShared: false,
+      elementTypes: Object.fromEntries(spec.items.map((item) => [item.id, item.elementType])),
+    },
+    channels: [...new Set([spec.sourceBoardId, spec.destinationBoardId])],
+  });
+}
+
 export interface TrashItem {
   id: string;
   elementType: string;
   /** Ursprünglicher Ort, wird für „Wiederherstellen“ gespeichert. */
-  from: { parentId: string; section: string; position: unknown };
+  from: Place;
 }
 
 /**
@@ -119,24 +155,16 @@ export interface TrashItem {
 export function elementsToTrash(ctx: ActionContext, boardId: string, items: TrashItem[]): Action {
   const now = (ctx.now ?? Date.now)();
   const trash = `${boardId}-trash`;
-  return envelope(ctx, {
-    type: 'ELEMENT_MOVE_MULTI',
-    moves: items.map((item) => ({
+  return elementsMove(ctx, {
+    operation: 'TRASH',
+    sourceBoardId: boardId,
+    destinationBoardId: trash,
+    items: items.map((item) => ({
       id: item.id,
-      location: { parentId: trash, section: 'TRASH', position: { addedDate: now, restoreLocation: item.from } },
+      elementType: item.elementType,
       from: item.from,
+      to: { parentId: trash, section: 'TRASH', position: { addedDate: now, restoreLocation: item.from } },
     })),
-    moveOperation: 'TRASH',
-    monitoring: { operation: 'TRASH' },
-    activity: {
-      track: false,
-      sourceBoardId: boardId,
-      isSourceShared: false,
-      destinationBoardId: trash,
-      isDestinationShared: false,
-      elementTypes: Object.fromEntries(items.map((item) => [item.id, item.elementType])),
-    },
-    channels: [boardId, trash],
   });
 }
 

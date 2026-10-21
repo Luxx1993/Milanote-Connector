@@ -1,12 +1,15 @@
 // Fassade über Session (CDP + Brückentab) und Protokoll (REST + Socket.IO).
 // Tools und CLI sprechen nur mit dieser Klasse.
 
-import { CdpConnection, browserWsUrl } from './session/cdp.ts';
+import { CdpConnection, browserWsUrl, isMilanoteUrl, listTargets } from './session/cdp.ts';
 import { MILANOTE_ORIGIN, PageBridge } from './session/bridge.ts';
 import { SocketClient, SocketError } from './protocol/socket.ts';
 import { IdGenerator } from './protocol/ids.ts';
 import { PLATFORM, ackStatus, type Action, type ActionContext } from './protocol/actions.ts';
 import { Writer, type WriteBackend } from './writer.ts';
+import { loadMetrics, type Metrics } from './layout/metrics.ts';
+import { estimateBox } from './layout/estimate.ts';
+import { COLLECT_SCRIPT, analyze, type MeasureReport, type Sample } from './measure.ts';
 import { holderBoard, isHidden, normalizeBoard, titleOf, type BoardView, type RawElement } from './domain/board.ts';
 import { MilanoteError } from './errors.ts';
 
@@ -68,17 +71,25 @@ export class MilanoteClient implements WriteBackend {
     private readonly cdp: CdpConnection,
     private readonly bridge: PageBridge,
     private readonly log: (message: string) => void,
+    private readonly metrics: Metrics,
   ) {
     const settle = Number(process.env.MILANOTE_BOARD_SETTLE_MS);
     this.write = new Writer(this, {
       allowHome: process.env.MILANOTE_ALLOW_HOME === '1',
       ...(Number.isFinite(settle) && process.env.MILANOTE_BOARD_SETTLE_MS ? { boardSettleMs: settle } : {}),
+      metrics,
       log,
     });
   }
 
   static async connect(options: ConnectOptions = {}): Promise<MilanoteClient> {
     const log = options.log ?? (() => undefined);
+    let metrics: Metrics;
+    try {
+      metrics = loadMetrics();
+    } catch (error) {
+      throw new MilanoteError('args', error instanceof Error ? error.message : String(error));
+    }
     let cdp: CdpConnection;
     try {
       cdp = await CdpConnection.connect(await browserWsUrl(options.port ?? 9222));
@@ -87,7 +98,7 @@ export class MilanoteClient implements WriteBackend {
     }
     try {
       const bridge = await PageBridge.open(cdp);
-      const client = new MilanoteClient(cdp, bridge, log);
+      const client = new MilanoteClient(cdp, bridge, log, metrics);
       await client.whoami();
       return client;
     } catch (error) {
@@ -203,6 +214,48 @@ export class MilanoteClient implements WriteBackend {
       offset: typeof raw.offset === 'number' ? raw.offset : offset,
       results: (raw.results ?? []).map(toSearchResult),
     };
+  }
+
+  /**
+   * Misst die Karten eines Boards im sichtbaren Milanote-Tab (Pixel) und rechnet sie in Rastereinheiten um.
+   * Nur lesend. Das Board muss in einem Tab dieses Browsers offen und sichtbar sein.
+   */
+  async measureBoard(boardRef: string): Promise<MeasureReport> {
+    const boardId = parseBoardRef(boardRef);
+    const { elements } = await this.getBoard(boardId);
+    const kids = Object.values(elements).filter((el) => el.location?.parentId === boardId && el.location.section === 'CANVAS' && !isHidden(el) && el.location.position);
+    const tab = (await listTargets(this.cdp)).find((t) => t.type === 'page' && isMilanoteUrl(t.url) && t.url.includes(boardId) && !t.url.includes('/api/ping'));
+    if (!tab) throw new MilanoteError('args', `Kein Tab mit dem Board ${boardId} offen. Öffne das Board im Debug-Chrome (npm run chrome) und lass das Fenster sichtbar.`);
+    const { sessionId } = (await this.cdp.send('Target.attachToTarget', { targetId: tab.targetId, flatten: true })) as { sessionId: string };
+    let rows: ({ id: string; x: number; y: number; w: number; h: number } | null)[];
+    try {
+      const result = (await this.cdp.send('Runtime.evaluate', { expression: COLLECT_SCRIPT(kids.map((k) => k._id)), returnByValue: true }, sessionId, 30_000)) as {
+        result?: { value?: typeof rows };
+        exceptionDetails?: { text?: string };
+      };
+      if (result.exceptionDetails || !Array.isArray(result.result?.value)) throw new MilanoteError('browser', `Messen im Tab fehlgeschlagen: ${result.exceptionDetails?.text ?? 'keine Antwort'}`);
+      rows = result.result.value;
+    } finally {
+      await this.cdp.send('Target.detachFromTarget', { sessionId }).catch(() => undefined);
+    }
+    const byId = new Map(kids.map((k) => [k._id, k]));
+    const samples: Sample[] = [];
+    for (const row of rows) {
+      const el = row && byId.get(row.id);
+      if (!row || !el || row.w <= 0 || row.h <= 0) continue;
+      const pos = el.location?.position as Record<string, number>;
+      const stored = Number(el.content?.width);
+      samples.push({
+        id: el._id,
+        type: el.elementType,
+        x: pos.x ?? Number.NaN,
+        y: pos.y ?? Number.NaN,
+        px: { x: row.x, y: row.y, w: row.w, h: row.h },
+        storedWidth: Number.isFinite(stored) && stored > 0 ? stored : undefined,
+        estimatedHeight: estimateBox(el, elements, this.metrics).h,
+      });
+    }
+    return analyze(samples);
   }
 
   async getElement(id: string): Promise<RawElement | undefined> {

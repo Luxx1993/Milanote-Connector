@@ -1,4 +1,4 @@
-// MCP-Server (stdio). Phase 2: Lesen und Orientieren. Phase 3: Schreiben (ohne Bilder).
+// MCP-Server (stdio). Phase 2: Lesen und Orientieren. Phase 3: Schreiben (ohne Bilder). Phase 5: Verschieben, Ändern, Anordnen.
 // Alles, was an stdout geht, ist MCP-Protokoll. Logs daher nur nach stderr.
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -6,6 +6,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { MilanoteClient } from './milanote.ts';
 import { MilanoteError } from './errors.ts';
+import { STRATEGIES } from './layout/strategies.ts';
 
 const port = Number(process.env.MILANOTE_CDP_PORT ?? 9222);
 const log = (message: string) => process.stderr.write(`[milanote] ${message}\n`);
@@ -22,7 +23,11 @@ Schreiben: create_board, add_note, add_link, add_todo_list, add_column legen Ele
 rechts neben den vorhandenen Inhalt, in Spalten ans Ende. Ins Home-Board wird nie geschrieben, nur in Unterboards.
 Jede Antwort enthält persisted (per Lesezugriff bestätigt). Bei persisted=false oder Fehler zuerst mit get_board nachsehen,
 was angekommen ist, und nicht blind wiederholen, sonst entstehen Duplikate. Entfernen geht nur über trash_element
-(Papierkorb, in Milanote wiederherstellbar) und nur auf ausdrückliche Bitte des Nutzers. ${UNTRUSTED}`;
+(Papierkorb, in Milanote wiederherstellbar) und nur auf ausdrückliche Bitte des Nutzers.
+Anordnen: Für viele zusammengehörige Inhalte compose_board statt vieler Einzelaufrufe. Du entscheidest, was zusammengehört
+(Gruppen und Reihenfolge), die Layout-Engine berechnet die Koordinaten überlappungsfrei. move_element, update_element und
+resize_element ändern einzelne bestehende Elemente. Größen von Karten sind Schätzungen (Milanote speichert keine Höhen).
+${UNTRUSTED}`;
 
 const boardRef = z.string().min(1).describe('Board-ID oder Milanote-URL (https://app.milanote.com/<id>/…)');
 const parentRef = z.string().min(1).describe('Ziel: Board-ID oder Milanote-URL; wo erlaubt auch die ID einer Spalte (Element kommt ans Ende der Spalte)');
@@ -67,7 +72,7 @@ const READ = { readOnlyHint: true, openWorldHint: true } as const;
 const WRITE = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true } as const;
 const TRASH = { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true } as const;
 
-const server = new McpServer({ name: 'milanote', version: '0.3.0' }, { instructions: INSTRUCTIONS });
+const server = new McpServer({ name: 'milanote', version: '0.4.0' }, { instructions: INSTRUCTIONS });
 
 server.registerTool(
   'whoami',
@@ -203,6 +208,99 @@ server.registerTool(
     annotations: WRITE,
   },
   (args) => run((c) => c.write.addColumn(args), false),
+);
+
+server.registerTool(
+  'move_element',
+  {
+    title: 'Milanote: Element verschieben',
+    description:
+      'Verschiebt ein Element auf eine Position (x/y) seines Boards, auf ein anderes Board (ohne x/y automatisch rechts neben den Inhalt), ' +
+      'in eine Spalte (ans Ende) oder eine Aufgabe in eine andere To-do-Liste. Spalten und Boards ziehen ihren Inhalt mit. ' +
+      'Umsortieren innerhalb einer Liste gibt es nicht. Überlappt die Zielposition vermutlich andere Karten, steht das in warnings (Größen geschätzt).',
+    inputSchema: {
+      element: boardRef.describe('ID oder URL des Elements'),
+      parent: boardRef.optional().describe('Neues Ziel: Board, Spalte oder To-do-Liste. Ohne Angabe bleibt das Element auf seinem Board und x/y sind Pflicht'),
+      x: coord('x'),
+      y: coord('y'),
+    },
+    annotations: { ...WRITE, idempotentHint: true },
+  },
+  (args) => run((c) => c.write.moveElement(args), false),
+);
+
+server.registerTool(
+  'update_element',
+  {
+    title: 'Milanote: Element ändern',
+    description:
+      'Ändert ein bestehendes Element. Je Typ möglich: CARD text (Markdown); TASK text und done; BOARD, COLUMN, TASK_LIST title ' +
+      '(bei einer Liste entfernt ein leerer Titel die Kopfzeile); LINK, IMAGE, FILE caption (leer entfernt sie). Alles Übrige wird abgelehnt.',
+    inputSchema: {
+      element: boardRef.describe('ID oder URL des Elements'),
+      text: z.string().min(1).max(20_000).optional(),
+      title: z.string().max(200).optional(),
+      done: z.boolean().optional(),
+      caption: z.string().max(2_000).optional(),
+    },
+    annotations: { ...WRITE, idempotentHint: true },
+  },
+  (args) => run((c) => c.write.updateElement(args), false),
+);
+
+server.registerTool(
+  'resize_element',
+  {
+    title: 'Milanote: Breite ändern',
+    description:
+      'Setzt die Breite von Karten, Spalten, Listen, Links und Bildern (content.width). Die Einheit ist noch nicht bestätigt ' +
+      '(dieselbe Zahl wie size.width in get_board); `persisted` zeigt, ob Milanote den Wert übernimmt. Experimentell.',
+    inputSchema: { element: boardRef.describe('ID oder URL des Elements'), width: z.number().int().min(10).max(400) },
+    annotations: { ...WRITE, idempotentHint: true },
+  },
+  (args) => run((c) => c.write.resizeElement(args), false),
+);
+
+const composeItem = z.union([
+  z.string().min(1).max(20_000).describe('Kurzform für eine Notiz (Markdown)'),
+  z.object({ type: z.literal('note'), text: z.string().min(1).max(20_000) }),
+  z.object({ type: z.literal('link'), url: z.string().min(1).max(2_000), caption: z.string().max(2_000).optional() }),
+  z.object({
+    type: z.literal('todo'),
+    title: z.string().max(200).optional(),
+    tasks: z.array(z.union([z.string().min(1).max(500), z.object({ text: z.string().min(1).max(500), done: z.boolean().optional() })])).min(1).max(50),
+  }),
+]);
+
+server.registerTool(
+  'compose_board',
+  {
+    title: 'Milanote: Board aus Gruppen aufbauen und anordnen',
+    description:
+      'Legt viele Inhalte in einem Aufruf an und ordnet sie selbst an. Du bestimmst nur, WAS ZUSAMMENGEHÖRT (Gruppen mit Titel und Einträgen in sinnvoller Reihenfolge); ' +
+      'die Koordinaten berechnet die Layout-Engine, überlappungsfrei. Layouts: ' +
+      '`columns` = jede Gruppe eine Milanote-Spalte nebeneinander (Kanban, Listen; Titel Pflicht); ' +
+      '`grid` = jede Gruppe ein Block aus Überschrift und Raster (Übersichten); ' +
+      '`masonry` = wie grid, aber platzsparend versetzt (Moodboard, Sammlungen); ' +
+      '`timeline` = jede Gruppe eine Bahn, Einträge der Reihe nach von links nach rechts (Abläufe, Zeitpläne; Reihenfolge der Einträge = zeitliche Reihenfolge); ' +
+      '`radial` = Mindmap mit Mittelpunkt (`center` Pflicht) und einem Zweig je Gruppe. ' +
+      'Mit `title` entsteht dafür ein neues Unterboard, sonst landet der Block rechts neben dem vorhandenen Inhalt (oder bei x/y). ' +
+      'Höchstens 30 Gruppen, 40 Einträge je Gruppe, 150 Elemente insgesamt.',
+    inputSchema: {
+      parent: parentRef.describe('Board, in das geschrieben wird (nicht das Home-Board)'),
+      title: z.string().min(1).max(200).optional().describe('Wenn gesetzt: neues Unterboard mit diesem Titel anlegen und darin aufbauen'),
+      layout: z.enum(STRATEGIES as unknown as [string, ...string[]]),
+      groups: z.array(z.object({ title: z.string().max(200).optional(), items: z.array(composeItem).max(40) })).min(1).max(30),
+      center: z.string().max(200).optional().describe('Text der Mittelpunktkarte (nur radial)'),
+      columns: z.number().int().min(1).max(8).optional().describe('Spalten je Gruppe (grid, masonry) bzw. Spalten je Reihe (columns)'),
+      maxWidth: z.number().int().min(60).max(1_000).optional().describe('Breite in Rastereinheiten, ab der in die nächste Reihe umbrochen wird'),
+      x: coord('x'),
+      y: coord('y'),
+    },
+    annotations: WRITE,
+  },
+  ({ parent, title, layout, groups, center, columns, maxWidth, x, y }) =>
+    run((c) => c.write.composeBoard({ parent, title, x, y, spec: { layout: layout as (typeof STRATEGIES)[number], groups, center, columns, maxWidth } }), false),
 );
 
 server.registerTool(

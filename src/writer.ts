@@ -11,11 +11,17 @@
 
 import { randomInt } from 'node:crypto';
 import { MilanoteError } from './errors.ts';
-import { ackStatus, elementCreate, elementSetType, elementUpdate, elementsToTrash, type Action, type ActionContext, type CanvasPosition, type ElementType, type InboxPosition } from './protocol/actions.ts';
+import { elementCreate, elementSetType, elementUpdate, elementsMove, elementsToTrash, type Action, type ActionContext, type CanvasPosition, type ElementType, type InboxPosition, type Place } from './protocol/actions.ts';
 import { isHidden, type RawElement } from './domain/board.ts';
-import { boardAbove, canvasChildrenOf, nextInboxPosition, parentInfo, type Elements, type ParentInfo } from './domain/hierarchy.ts';
-import { nextCanvasPosition } from './domain/placement.ts';
-import { textToDoc } from './domain/richtext.ts';
+import { boardAbove, canvasChildrenOf, childrenIn, dropTarget, nextInboxPosition, parentInfo, type DropTarget, type Elements, type ParentInfo } from './domain/hierarchy.ts';
+import { SCORE_STEP, nextCanvasPosition } from './domain/placement.ts';
+import { docToText, textToDoc } from './domain/richtext.ts';
+import { planCompose, type ComposeSpec, type Step, type TaskInput } from './layout/compose.ts';
+import { estimateBox } from './layout/estimate.ts';
+import { collides } from './layout/geometry.ts';
+import { DEFAULT_METRICS, type Metrics } from './layout/metrics.ts';
+
+export type { TaskInput };
 
 export interface WriteUser {
   id: string;
@@ -42,6 +48,8 @@ export interface WriterOptions {
   boardSettleMs?: number;
   verifyAttempts?: number;
   verifyDelayMs?: number;
+  /** Größenmodell für Layout und Überlappungswarnungen */
+  metrics?: Metrics;
   log?: (message: string) => void;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
@@ -66,7 +74,6 @@ export interface WriteMeta {
   warnings: string[];
 }
 
-export type TaskInput = string | { text: string; done?: boolean };
 
 interface Target {
   parent: ParentInfo;
@@ -103,6 +110,7 @@ export class Writer {
       boardSettleMs: 1_500,
       verifyAttempts: 6,
       verifyDelayMs: 500,
+      metrics: DEFAULT_METRICS,
       sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
       now: Date.now,
       ...options,
@@ -115,17 +123,23 @@ export class Writer {
     return this.exclusive(async () => {
       const title = requireText(input.title, 'Titel', 200);
       const t = await this.target(input.parent, false);
-      const user = await this.be.whoami();
-      const ctx = this.be.actionContext(user);
       const position = this.canvasPosition(t, input);
-      const id = ctx.ids.elementId();
-      const content = { title, icon: null, color: null, secondaryColor: null, defaultColorPalette: PALETTES[randomInt(PALETTES.length)] };
       const warnings: string[] = [];
-      const sent = [await this.create(ctx, t, id, 'BOARD', 'CANVAS', position, content)];
-      const persisted = await this.finish(t, sent, warnings);
-      if (persisted) await this.waitUntilReady(id, warnings);
-      return { ...this.meta(id, 'BOARD', t, persisted, warnings), url: this.url(id), title, position: { x: position.x, y: position.y } };
+      const made = await this.makeBoard(t, title, position, warnings);
+      return { ...this.meta(made.id, 'BOARD', t, made.persisted, warnings), url: this.url(made.id), title, position: { x: position.x, y: position.y } };
     });
+  }
+
+  /** Legt ein Board an und wartet, bis es bereit ist. Nicht exklusiv: nur aus exklusiven Abläufen aufrufen. */
+  private async makeBoard(t: Target, title: string, position: CanvasPosition, warnings: string[]): Promise<{ id: string; persisted: boolean }> {
+    const user = await this.be.whoami();
+    const ctx = this.be.actionContext(user);
+    const id = ctx.ids.elementId();
+    const content = { title, icon: null, color: null, secondaryColor: null, defaultColorPalette: PALETTES[randomInt(PALETTES.length)] };
+    const sent = [await this.create(ctx, t, id, 'BOARD', 'CANVAS', position, content)];
+    const persisted = await this.finish(t, sent, warnings);
+    if (persisted) await this.waitUntilReady(id, warnings);
+    return { id, persisted };
   }
 
   addNote(input: { parent: string; text: string } & Coordinates): Promise<WriteMeta & Placed> {
@@ -154,32 +168,10 @@ export class Writer {
       const id = ctx.ids.elementId();
       const warnings: string[] = [];
       const sent = [await this.create(ctx, t, id, 'LINK', place.section, place.raw, { url })];
-      let persisted = await this.finish(t, sent, warnings);
-
+      const persisted = await this.finish(t, sent, warnings);
       let previewApplied = false;
       let linkTitle: string | undefined;
-      if (persisted) {
-        const preview = await this.preview(user.id, url, id, warnings);
-        const captionDoc = input.caption?.trim() ? textToDoc(input.caption, () => ctx.ids.blockKey()) : undefined;
-        if (preview) {
-          const changes: Record<string, unknown> = {};
-          for (const key of ['image', 'mediaType', 'link', 'provider', 'media']) if (preview[key] !== undefined) changes[key] = preview[key];
-          const description = typeof preview.description === 'string' && preview.description ? textToDoc(preview.description, () => ctx.ids.blockKey()) : undefined;
-          const caption = captionDoc ?? description;
-          if (caption) Object.assign(changes, { caption, showCaption: true });
-          else changes.showCaption = false;
-          const elementType = typeof preview.elementType === 'string' ? preview.elementType : 'LINK';
-          previewApplied = await this.tryAction(elementSetType(ctx, { id, elementType, boardId: t.parent.boardId, changes }), 'Link-Vorschau konnte nicht angewendet werden', warnings);
-          const link = preview.link as { title?: unknown } | undefined;
-          if (previewApplied && typeof link?.title === 'string') linkTitle = link.title;
-        } else if (captionDoc) {
-          await this.tryAction(
-            elementUpdate(ctx, { id, elementType: 'LINK', boardId: t.parent.boardId, previousVersionId: ctx.ids.createVersionId(), changes: { caption: captionDoc, showCaption: true } }),
-            'Beschriftung konnte nicht gesetzt werden',
-            warnings,
-          );
-        }
-      } else persisted = false;
+      if (persisted) ({ previewApplied, linkTitle } = await this.decorateLink(ctx, user.id, t.parent.boardId, id, url, input.caption, warnings));
       return { ...this.meta(id, 'LINK', t, persisted, warnings), ...place.shown, url, linkTitle, previewApplied };
     });
   }
@@ -241,6 +233,295 @@ export class Writer {
       const persisted = await this.finish(t, sent, warnings);
       return { ...this.meta(columnId, 'COLUMN', t, persisted, warnings), section: 'CANVAS', position: { x: position.x, y: position.y }, title, notes: created };
     });
+  }
+
+  // ------------------------------------------------------------------ Verschieben, Ändern, Größe
+
+  /**
+   * Verschiebt ein Element: auf eine Position desselben oder eines anderen Boards, in eine Spalte (ans Ende)
+   * oder eine Aufgabe in eine andere To-do-Liste. Umsortieren innerhalb einer Liste gibt es nicht.
+   */
+  moveElement(input: { element: string; parent?: string } & Coordinates): Promise<MoveResult> {
+    return this.exclusive(async () => {
+      const user = await this.be.whoami();
+      const id = this.be.parseRef(input.element);
+      this.refuseRoots(user, id);
+      if ((input.x === undefined) !== (input.y === undefined)) throw new MilanoteError('args', 'x und y nur zusammen angeben (oder beide weglassen)');
+      const targetRef = input.parent ? this.be.parseRef(input.parent) : undefined;
+      const loaded = await this.be.loadWithAncestors(targetRef ? [id, targetRef] : [id]);
+      const el = this.visibleElement(loaded, id);
+      const sourceBoard = boardAbove(loaded, id);
+      const loc = el.location;
+      if (!sourceBoard || !loc?.parentId || !loc.section) throw new MilanoteError('not_found', `Zu ${id} wurde kein Board gefunden`);
+      if (sourceBoard === user.rootBoardId && !this.o.allowHome) throw this.homeLocked('Das Element liegt im Home-Board.');
+      const from: Place = { parentId: loc.parentId, section: loc.section, position: loc.position };
+
+      let drop: DropTarget;
+      if (targetRef) drop = dropTarget(loaded, id, targetRef);
+      else if (loc.section === 'CANVAS' && loaded[loc.parentId]?.elementType === 'BOARD') drop = { parentId: loc.parentId, type: 'BOARD', boardId: loc.parentId };
+      else throw new MilanoteError('args', 'Das Element liegt in einer Spalte oder Liste. Gib ein Ziel an (parent), z. B. das Board, um es auf die Fläche zu holen.');
+      if (drop.boardId === user.rootBoardId && !this.o.allowHome) throw this.homeLocked('Das Ziel liegt im Home-Board.');
+
+      const { elements } = await this.be.getBoard(drop.boardId);
+      const others: Elements = { ...elements };
+      delete others[id];
+      let to: Place;
+      if (drop.type === 'BOARD') {
+        const onSameCanvas = drop.parentId === from.parentId && from.section === 'CANVAS';
+        if (onSameCanvas && input.x === undefined) throw new MilanoteError('args', 'Gib x und y an, um das Element auf dem Board zu verschieben');
+        const siblings = this.canvasKids(others, drop.parentId);
+        const top = siblings.reduce((max, c) => Math.max(max, c.score), 0) + SCORE_STEP;
+        const position = input.x !== undefined && input.y !== undefined ? { x: Math.round(input.x), y: Math.round(input.y), score: top } : nextCanvasPosition(siblings);
+        to = { parentId: drop.parentId, section: 'CANVAS', position };
+      } else {
+        if (input.x !== undefined) throw new MilanoteError('args', 'In Spalten und Listen gibt es keine x/y-Koordinaten; das Element kommt ans Ende');
+        to = { parentId: drop.parentId, section: 'INBOX', position: nextInboxPosition(others, drop.parentId) };
+      }
+
+      const warnings: string[] = [];
+      const type = el.elementType;
+      if (to.section === 'CANVAS') warnings.push(...this.overlapWarnings(el, to.position as CanvasPosition, { ...loaded, ...others }, drop.parentId));
+      const base = { id, type, from: placeView(from), to: placeView(to), boardId: drop.boardId, boardUrl: this.url(drop.boardId) };
+      if (samePlace(from, to)) return { ...base, persisted: true, warnings: [...warnings, 'Das Element liegt schon dort; es wurde nichts gesendet.'] };
+
+      const ctx = this.be.actionContext(user);
+      const acked = await this.submit(elementsMove(ctx, { operation: 'DROP', sourceBoardId: sourceBoard, destinationBoardId: drop.boardId, items: [{ id, elementType: type, from, to }] }));
+      const persisted = await this.pollElement(id, (e) => atPlace(e, to));
+      this.explain(acked, persisted, id, 'Verschieben', warnings);
+      return { ...base, persisted, warnings };
+    });
+  }
+
+  /** Ändert Text, Titel, Erledigt-Status oder Beschriftung eines Elements (je nach Typ). */
+  updateElement(input: { element: string; text?: string; title?: string; done?: boolean; caption?: string }): Promise<{ id: string; type: string; updated: string[]; boardUrl: string; persisted: boolean; warnings: string[] }> {
+    return this.exclusive(async () => {
+      const user = await this.be.whoami();
+      const id = this.be.parseRef(input.element);
+      this.refuseRoots(user, id);
+      const loaded = await this.be.loadWithAncestors([id]);
+      const el = this.visibleElement(loaded, id);
+      const board = boardAbove(loaded, id);
+      if (!board) throw new MilanoteError('not_found', `Zu ${id} wurde kein Board gefunden`);
+      if (board === user.rootBoardId && !this.o.allowHome) throw this.homeLocked('Das Element liegt im Home-Board.');
+      const type = el.elementType;
+      const ctx = this.be.actionContext(user);
+      const given = (['text', 'title', 'done', 'caption'] as const).filter((f) => input[f] !== undefined);
+      if (!given.length) throw new MilanoteError('args', 'Nichts zu ändern: text, title, done oder caption angeben');
+      const allowed = UPDATABLE[type] ?? [];
+      for (const field of given) {
+        if (!allowed.includes(field)) throw new MilanoteError('args', `Ein ${type} kennt "${field}" nicht${allowed.length ? `; möglich sind: ${allowed.join(', ')}` : ' und lässt sich so nicht ändern'}`);
+      }
+
+      const changes: Record<string, unknown> = {};
+      const checks: ((e: RawElement) => boolean)[] = [];
+      const key = () => ctx.ids.blockKey();
+      if (input.text !== undefined) {
+        const doc = textToDoc(requireText(input.text, 'Text', 20_000), key);
+        changes.textContent = doc;
+        checks.push((e) => docToText(e.content?.textContent) === docToText(doc));
+      }
+      if (input.title !== undefined) {
+        const title = input.title.trim();
+        if (type !== 'TASK_LIST') requireText(title, 'Titel', 200);
+        if (title.length > 200) throw new MilanoteError('args', 'Titel ist zu lang (höchstens 200 Zeichen)');
+        changes.title = title || null;
+        if (type === 'TASK_LIST') changes.showTitle = Boolean(title);
+        checks.push((e) => (e.content?.title ?? '') === title);
+      }
+      if (input.done !== undefined) {
+        changes.isComplete = input.done;
+        checks.push((e) => Boolean(e.content?.isComplete) === input.done);
+      }
+      if (input.caption !== undefined) {
+        const caption = input.caption.trim();
+        if (caption) {
+          const doc = textToDoc(requireText(caption, 'Beschriftung', 2_000), key);
+          Object.assign(changes, { caption: doc, showCaption: true });
+          checks.push((e) => docToText(e.content?.caption) === docToText(doc));
+        } else {
+          Object.assign(changes, { caption: null, showCaption: false });
+          checks.push((e) => !docToText(e.content?.caption));
+        }
+      }
+
+      const previous = typeof el.meta?.versionId === 'string' ? el.meta.versionId : null;
+      const warnings: string[] = [];
+      const acked = await this.submit(elementUpdate(ctx, { id, elementType: type, boardId: board, previousVersionId: previous, changes }));
+      const persisted = await this.pollElement(id, (e) => checks.every((c) => c(e)));
+      this.explain(acked, persisted, id, 'Ändern', warnings);
+      return { id, type, updated: given, boardUrl: this.url(board), persisted, warnings };
+    });
+  }
+
+  /**
+   * Setzt die Breite eines Elements (content.width). Die Einheit von content.width ist nicht bestätigt (siehe
+   * docs/phase5.md); der Abgleich zeigt, ob Milanote den Wert übernimmt.
+   */
+  resizeElement(input: { element: string; width: number }): Promise<{ id: string; type: string; width: number; boardUrl: string; persisted: boolean; warnings: string[] }> {
+    return this.exclusive(async () => {
+      const user = await this.be.whoami();
+      const id = this.be.parseRef(input.element);
+      this.refuseRoots(user, id);
+      const width = Math.round(input.width);
+      if (!Number.isFinite(width) || width < 10 || width > 400) throw new MilanoteError('args', 'width muss zwischen 10 und 400 liegen');
+      const loaded = await this.be.loadWithAncestors([id]);
+      const el = this.visibleElement(loaded, id);
+      if (!RESIZABLE.has(el.elementType)) throw new MilanoteError('args', `Die Breite eines ${el.elementType} lässt sich nicht ändern; möglich: ${[...RESIZABLE].join(', ')}`);
+      const board = boardAbove(loaded, id);
+      if (!board) throw new MilanoteError('not_found', `Zu ${id} wurde kein Board gefunden`);
+      if (board === user.rootBoardId && !this.o.allowHome) throw this.homeLocked('Das Element liegt im Home-Board.');
+      const ctx = this.be.actionContext(user);
+      const previous = typeof el.meta?.versionId === 'string' ? el.meta.versionId : null;
+      const warnings: string[] = [];
+      const acked = await this.submit(elementUpdate(ctx, { id, elementType: el.elementType, boardId: board, previousVersionId: previous, changes: { width } }));
+      const persisted = await this.pollElement(id, (e) => Number(e.content?.width) === width);
+      this.explain(acked, persisted, id, 'Größe ändern', warnings);
+      return { id, type: el.elementType, width, boardUrl: this.url(board), persisted, warnings };
+    });
+  }
+
+  // ------------------------------------------------------------------ compose_board
+
+  /**
+   * Legt Gruppen und Inhalte in einem Rutsch an und ordnet sie nach einer Strategie an. Claude sagt, was zusammengehört;
+   * die Layout-Engine bestimmt, wo es liegt. Mit `title` entsteht dafür zuerst ein neues Unterboard, sonst landet der
+   * Block rechts neben dem vorhandenen Inhalt (oder bei x/y).
+   */
+  composeBoard(input: { parent: string; title?: string; spec: ComposeSpec } & Coordinates): Promise<ComposeResult> {
+    return this.exclusive(async () => {
+      const m = this.o.metrics;
+      // Erst prüfen und planen, dann das Netz benutzen: ein ungültiger Auftrag ändert nichts.
+      const plan = planCompose(input.spec, m);
+      const title = input.title?.trim() ? requireText(input.title, 'Titel', 200) : undefined;
+      let t = await this.target(input.parent, false);
+      const user = await this.be.whoami();
+      const ctx = this.be.actionContext(user);
+      const warnings: string[] = [];
+
+      if ((input.x === undefined) !== (input.y === undefined)) throw new MilanoteError('args', 'x und y nur zusammen angeben (oder beide weglassen)');
+      let origin: { x: number; y: number };
+      let newBoard: { id: string; url: string; title: string } | undefined;
+      if (title) {
+        const made = await this.makeBoard(t, title, this.canvasPosition(t, input), warnings);
+        if (!made.persisted) return { ...this.emptyCompose(t, input.spec.layout), persisted: false, warnings };
+        newBoard = { id: made.id, url: this.url(made.id), title };
+        t = await this.target(made.id, false);
+        origin = { x: 4, y: 4 };
+      } else if (input.x !== undefined && input.y !== undefined) {
+        origin = { x: Math.round(input.x), y: Math.round(input.y) };
+      } else {
+        const free = nextCanvasPosition(this.canvasKids(t.elements, t.parent.boardId));
+        origin = { x: free.x, y: free.y };
+      }
+
+      const top = this.canvasKids(t.elements, t.parent.boardId).reduce((max, c) => Math.max(max, c.score), 0);
+      let z = top;
+      const ids = new Map<string, string>();
+      const sent: Sent[] = [];
+      try {
+        for (const step of plan.steps) {
+          const id = ctx.ids.elementId();
+          ids.set(step.key, id);
+          const parentId = step.parentKey ? (ids.get(step.parentKey) as string) : t.parent.parentId;
+          const position = step.rel && step.section === 'CANVAS' ? { x: origin.x + step.rel.x, y: origin.y + step.rel.y, score: (z += SCORE_STEP) } : { index: step.index ?? 0, score: (step.index ?? 0) * SCORE_STEP };
+          sent.push(await this.createChild(ctx, t, parentId, id, step.type, position, this.contentOf(step, ctx), step.section));
+        }
+      } catch (error) {
+        throw partial(error, sent);
+      }
+      const persisted = await this.finish(t, sent, warnings);
+
+      if (persisted) {
+        for (const step of plan.steps.filter((s) => s.kind === 'link')) {
+          await this.decorateLink(ctx, user.id, t.parent.boardId, ids.get(step.key) as string, step.url as string, step.caption, warnings);
+        }
+      }
+
+      const created = plan.steps.map((step) => ({ key: step.key, id: ids.get(step.key) as string, type: step.type, group: step.group }));
+      return {
+        boardId: t.parent.boardId,
+        boardUrl: this.url(t.parent.boardId),
+        newBoard,
+        layout: input.spec.layout,
+        origin,
+        size: { w: plan.bounds.w, h: plan.bounds.h },
+        count: plan.count,
+        groups: input.spec.groups.map((g, gi) => ({ index: gi, title: g.title, elements: plan.steps.filter((s) => s.group === gi).length })),
+        created,
+        persisted,
+        warnings,
+      };
+    });
+  }
+
+  private emptyCompose(t: Target, layout: string): Omit<ComposeResult, 'persisted' | 'warnings'> {
+    return { boardId: t.parent.boardId, boardUrl: this.url(t.parent.boardId), layout, origin: { x: 0, y: 0 }, size: { w: 0, h: 0 }, count: 0, groups: [], created: [] };
+  }
+
+  private contentOf(step: Step, ctx: ActionContext): Record<string, unknown> {
+    const doc = (text: string) => textToDoc(text, () => ctx.ids.blockKey());
+    switch (step.kind) {
+      case 'column':
+        return { title: step.title ?? null };
+      case 'header':
+      case 'center':
+      case 'note':
+        return { textContent: doc(step.text ?? '') };
+      case 'link':
+        return { url: step.url };
+      case 'todo':
+        return { title: step.title ?? null, showTitle: Boolean(step.title) };
+      case 'task':
+        return { textContent: doc(step.text ?? ''), ...(step.done ? { isComplete: true } : {}) };
+    }
+  }
+
+  // ------------------------------------------------------------------ Hilfen für Verschieben und Ändern
+
+  private refuseRoots(user: WriteUser, id: string): void {
+    if (id === user.rootBoardId || id === user.quickNotesRootId) throw new MilanoteError('args', `${id} ist ein Wurzel-Board (Home bzw. Schnellnotizen) und lässt sich so nicht ändern.`);
+  }
+
+  private visibleElement(elements: Elements, id: string): RawElement {
+    const el = elements[id];
+    if (!el || el.elementType === 'SKELETON') throw new MilanoteError('not_found', `Element ${id} nicht gefunden oder kein Zugriff`);
+    if (isHidden(el)) throw new MilanoteError('args', `Element ${id} liegt im Papierkorb. Stelle es in Milanote zuerst wieder her.`);
+    return el;
+  }
+
+  private async pollElement(id: string, check: (el: RawElement) => boolean): Promise<boolean> {
+    for (let attempt = 0; attempt < this.o.verifyAttempts; attempt += 1) {
+      if (attempt > 0) await this.o.sleep(this.o.verifyDelayMs);
+      try {
+        const el = (await this.be.loadWithAncestors([id]))[id];
+        if (el && check(el)) return true;
+      } catch {
+        /* nächster Versuch */
+      }
+    }
+    return false;
+  }
+
+  /** Einheitliche Auswertung von Ack und Abgleich für Ein-Element-Operationen. */
+  private explain(acked: boolean, persisted: boolean, id: string, what: string, warnings: string[]): void {
+    if (!acked && !persisted) throw new MilanoteError('connection', `${what}: Milanote hat nicht bestätigt, und die Änderung an ${id} ist nicht zu sehen. Vermutlich ist nichts passiert; bitte mit get_board prüfen und erneut versuchen.`);
+    if (!acked) warnings.push('Keine Bestätigung von Milanote (Verbindung unterbrochen), die Änderung ist aber angekommen.');
+    if (acked && !persisted) warnings.push(`Milanote hat "${what}" bestätigt, die Änderung an ${id} ist per REST aber nicht zu sehen (möglicherweise verworfen oder in anderer Form erwartet). Prüfe mit get_board, bevor du es erneut versuchst.`);
+  }
+
+  /** Warnt, wenn das Element an der Zielposition vermutlich andere überdeckt (Größen sind geschätzt). */
+  private overlapWarnings(el: RawElement, position: CanvasPosition, elements: Elements, boardId: string): string[] {
+    const m = this.o.metrics;
+    const box = estimateBox(el, elements, m);
+    const mine = { x: position.x, y: position.y, ...box };
+    const hits = childrenIn(elements, boardId, 'CANVAS')
+      .filter((sib) => sib._id !== el._id && sib.location?.position)
+      .filter((sib) => {
+        const p = sib.location?.position as Record<string, number>;
+        return collides(mine, { x: p.x ?? 0, y: p.y ?? 0, ...estimateBox(sib, elements, m) }, 1);
+      })
+      .map((sib) => sib._id);
+    return hits.length ? [`Das Element überlappt an dieser Position vermutlich ${hits.slice(0, 3).join(', ')}${hits.length > 3 ? ` und ${hits.length - 3} weitere` : ''} (Größen geschätzt, siehe docs/phase5.md).`] : [];
   }
 
   /**
@@ -327,10 +608,15 @@ export class Writer {
     return new MilanoteError('args', `${detail} Schreiben ins Home-Board ist gesperrt, damit es aufgeräumt bleibt. Bitte ein Unterboard als Ziel angeben (oder MILANOTE_ALLOW_HOME=1 setzen).`);
   }
 
+  /** Kinder eines Boards auf der Fläche, mit Breiten aus dem Größenmodell (gleiche Annahmen wie das Layout). */
+  private canvasKids(elements: Elements, boardId: string) {
+    return canvasChildrenOf(elements, boardId, (el) => estimateBox(el, elements, this.o.metrics).w);
+  }
+
   private canvasPosition(t: Target, c: Coordinates): CanvasPosition {
     if ((c.x === undefined) !== (c.y === undefined)) throw new MilanoteError('args', 'x und y nur zusammen angeben (oder beide weglassen)');
     if (t.parent.type !== 'BOARD') throw new MilanoteError('args', 'Dieses Element kann nur direkt auf einem Board liegen, nicht in einer Spalte');
-    return nextCanvasPosition(canvasChildrenOf(t.elements, t.parent.boardId), c);
+    return nextCanvasPosition(this.canvasKids(t.elements, t.parent.boardId), c);
   }
 
   private placement(t: Target, c: Coordinates): { section: 'CANVAS' | 'INBOX'; raw: CanvasPosition | InboxPosition; shown: Placed } {
@@ -384,6 +670,32 @@ export class Writer {
       warnings.push(`${message}: ${error instanceof Error ? error.message : String(error)}`);
       return false;
     }
+  }
+
+  /** Holt die Link-Vorschau und wendet sie an; ohne Vorschau bleibt der Link, eine Beschriftung kommt per Update. */
+  private async decorateLink(ctx: ActionContext, userId: string, boardId: string, id: string, url: string, caption: string | undefined, warnings: string[]): Promise<{ previewApplied: boolean; linkTitle?: string }> {
+    const preview = await this.preview(userId, url, id, warnings);
+    const captionDoc = caption?.trim() ? textToDoc(caption, () => ctx.ids.blockKey()) : undefined;
+    if (!preview) {
+      if (captionDoc) {
+        await this.tryAction(
+          elementUpdate(ctx, { id, elementType: 'LINK', boardId, previousVersionId: ctx.ids.createVersionId(), changes: { caption: captionDoc, showCaption: true } }),
+          'Beschriftung konnte nicht gesetzt werden',
+          warnings,
+        );
+      }
+      return { previewApplied: false };
+    }
+    const changes: Record<string, unknown> = {};
+    for (const key of ['image', 'mediaType', 'link', 'provider', 'media']) if (preview[key] !== undefined) changes[key] = preview[key];
+    const description = typeof preview.description === 'string' && preview.description ? textToDoc(preview.description, () => ctx.ids.blockKey()) : undefined;
+    const shown = captionDoc ?? description;
+    if (shown) Object.assign(changes, { caption: shown, showCaption: true });
+    else changes.showCaption = false;
+    const elementType = typeof preview.elementType === 'string' ? preview.elementType : 'LINK';
+    const previewApplied = await this.tryAction(elementSetType(ctx, { id, elementType, boardId, changes }), 'Link-Vorschau konnte nicht angewendet werden', warnings);
+    const link = preview.link as { title?: unknown } | undefined;
+    return { previewApplied, linkTitle: previewApplied && typeof link?.title === 'string' ? link.title : undefined };
   }
 
   private async preview(userId: string, url: string, elementId: string, warnings: string[]): Promise<Record<string, unknown> | undefined> {
@@ -503,4 +815,69 @@ function requireHttpUrl(value: string): string {
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new MilanoteError('args', 'Nur http- und https-Links sind erlaubt');
   return url.toString();
+}
+
+export interface MoveResult {
+  id: string;
+  type: string;
+  from: PlaceView;
+  to: PlaceView;
+  boardId: string;
+  boardUrl: string;
+  persisted: boolean;
+  warnings: string[];
+}
+
+export interface PlaceView {
+  parentId: string;
+  section: string;
+  x?: number;
+  y?: number;
+  index?: number;
+}
+
+export interface ComposeResult {
+  boardId: string;
+  boardUrl: string;
+  newBoard?: { id: string; url: string; title: string };
+  layout: string;
+  /** Linke obere Ecke des Blocks auf dem Board (Rastereinheiten) */
+  origin: { x: number; y: number };
+  /** Größe des Blocks (Rastereinheiten, geschätzt) */
+  size: { w: number; h: number };
+  count: number;
+  groups: { index: number; title?: string; elements: number }[];
+  created: { key: string; id: string; type: string; group: number | null }[];
+  persisted: boolean;
+  warnings: string[];
+}
+
+/** Welche Felder `update_element` je Elementtyp ändern darf. */
+const UPDATABLE: Record<string, readonly string[]> = {
+  CARD: ['text'],
+  TASK: ['text', 'done'],
+  BOARD: ['title'],
+  COLUMN: ['title'],
+  TASK_LIST: ['title'],
+  LINK: ['caption'],
+  IMAGE: ['caption'],
+  FILE: ['caption'],
+};
+
+const RESIZABLE = new Set(['CARD', 'COLUMN', 'TASK_LIST', 'LINK', 'IMAGE', 'FILE', 'DOCUMENT']);
+
+function placeView(place: Place): PlaceView {
+  const p = (place.position ?? {}) as Record<string, number>;
+  return place.section === 'CANVAS' ? { parentId: place.parentId, section: place.section, x: p.x, y: p.y } : { parentId: place.parentId, section: place.section, index: p.index };
+}
+
+function samePlace(a: Place, b: Place): boolean {
+  if (a.parentId !== b.parentId || a.section !== b.section) return false;
+  const pa = (a.position ?? {}) as Record<string, number>;
+  const pb = (b.position ?? {}) as Record<string, number>;
+  return a.section === 'CANVAS' ? pa.x === pb.x && pa.y === pb.y : pa.index === pb.index;
+}
+
+function atPlace(el: RawElement, to: Place): boolean {
+  return samePlace({ parentId: el.location?.parentId ?? '', section: el.location?.section ?? '', position: el.location?.position }, to);
 }
