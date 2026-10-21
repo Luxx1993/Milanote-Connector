@@ -8,7 +8,10 @@ import { IdGenerator } from './protocol/ids.ts';
 import { PLATFORM, ackStatus, elementCreate, type Action, type ActionContext, type CanvasPosition } from './protocol/actions.ts';
 import { textToDoc } from './domain/richtext.ts';
 import { nextCanvasPosition, type CanvasChild } from './domain/placement.ts';
+import { holderBoard, isHidden, normalizeBoard, titleOf, type BoardView, type RawElement } from './domain/board.ts';
 import { MilanoteError } from './errors.ts';
+
+export type { BoardView, RawElement } from './domain/board.ts';
 
 export interface MilanoteUser {
   id: string;
@@ -17,12 +20,21 @@ export interface MilanoteUser {
   quickNotesRootId?: string;
 }
 
-export interface RawElement {
-  _id: string;
-  elementType: string;
-  location?: { parentId?: string; section?: string; position?: Record<string, number> };
-  content?: Record<string, unknown>;
-  meta?: Record<string, unknown>;
+export interface BoardTreeNode {
+  id: string;
+  title: string | null;
+  children: BoardTreeNode[];
+  /** Dieses Board wurde wegen Tiefe oder Gesamtgrenze nicht geladen; es kann weitere Unterboards haben. */
+  more?: boolean;
+  error?: string;
+}
+
+export interface SearchResult {
+  boardId: string;
+  title: string | null;
+  path: string[];
+  modifiedTime?: number;
+  matches: { elementId?: string; type?: string; snippet: string }[];
 }
 
 export interface ConnectOptions {
@@ -126,6 +138,82 @@ export class MilanoteClient {
     if (!board) throw new MilanoteError('not_found', `Board ${boardId} nicht gefunden oder kein Zugriff`);
     if (board.elementType === 'SKELETON') throw new MilanoteError('auth', `Kein Zugriff auf Board ${boardId} (nur Platzhalter geliefert)`);
     return { board, elements };
+  }
+
+  /** Mehrere Boards in einer Anfrage; Rückgabe ist das zusammengeführte `elements`-Objekt. */
+  async getBoards(boardIds: string[]): Promise<{ elements: Record<string, RawElement>; errors: Record<string, unknown> }> {
+    const query = new URLSearchParams({ excludeSelf: 'false', loadAncestors: 'false', ids: boardIds.join(',') });
+    const data = await this.rest<{ elements?: Record<string, RawElement>; errors?: Record<string, unknown> }>('GET', `/api/boards?${query}`);
+    return { elements: data.elements ?? {}, errors: data.errors ?? {} };
+  }
+
+  /** Board-Inhalt als Baum (Spalten/Listen mit Kindern), Papierkorb ausgeblendet. */
+  async readBoard(boardRef: string, maxElements = 500): Promise<BoardView> {
+    const boardId = parseBoardRef(boardRef);
+    const { elements } = await this.getBoard(boardId);
+    return normalizeBoard(boardId, elements, MILANOTE_ORIGIN, maxElements);
+  }
+
+  /** Direkte Unterboards eines Boards (Standard: Home-Board). */
+  async listBoards(parentRef?: string): Promise<{ parent: { id: string; title: string | null }; boards: { id: string; title: string | null; url: string }[] }> {
+    const parentId = parentRef ? parseBoardRef(parentRef) : (await this.whoami()).rootBoardId;
+    const view = await this.readBoard(parentId, 0);
+    return {
+      parent: { id: parentId, title: view.board.title },
+      boards: view.childBoards.map((b) => ({ ...b, url: `${MILANOTE_ORIGIN}/${b.id}` })),
+    };
+  }
+
+  /** Board-Hierarchie ebenenweise, je Ebene gebündelte Anfragen. */
+  async getBoardTree(rootRef?: string, maxDepth = 3, maxBoards = 150): Promise<{ root: BoardTreeNode; boardsLoaded: number; complete: boolean }> {
+    const rootId = rootRef ? parseBoardRef(rootRef) : (await this.whoami()).rootBoardId;
+    const root: BoardTreeNode = { id: rootId, title: null, children: [] };
+    const nodes = new Map<string, BoardTreeNode>([[rootId, root]]);
+    let level: BoardTreeNode[] = [root];
+    let loaded = 0;
+    let complete = true;
+
+    for (let depth = 0; level.length; depth += 1) {
+      const next: BoardTreeNode[] = [];
+      for (let i = 0; i < level.length; i += 20) {
+        const batch = level.slice(i, i + 20);
+        const ids = new Set(batch.map((n) => n.id));
+        const { elements, errors } = await this.getBoards([...ids]);
+        loaded += batch.length;
+        for (const node of batch) {
+          const own = elements[node.id];
+          if (errors[node.id] || !own) node.error = 'nicht ladbar';
+          else node.title = titleOf(own);
+        }
+        for (const el of Object.values(elements)) {
+          if (el.elementType !== 'BOARD' || ids.has(el._id) || isHidden(el) || nodes.has(el._id)) continue;
+          const holder = holderBoard(el, elements, ids);
+          const parent = holder ? nodes.get(holder) : undefined;
+          if (!parent) continue;
+          const child: BoardTreeNode = { id: el._id, title: titleOf(el), children: [] };
+          parent.children.push(child);
+          nodes.set(child.id, child);
+          if (depth + 1 < maxDepth && loaded + next.length < maxBoards) next.push(child);
+          else {
+            child.more = true;
+            complete = false;
+          }
+        }
+      }
+      level = next;
+    }
+    return { root, boardsLoaded: loaded, complete };
+  }
+
+  async search(query: string, offset = 0, sort: 'viewed' | 'modified' = 'viewed'): Promise<{ total: number; offset: number; results: SearchResult[] }> {
+    if (!query.trim()) throw new MilanoteError('args', 'Suchbegriff ist leer');
+    const params = new URLSearchParams({ query, offset: String(offset), sort, locale: 'en-US' });
+    const raw = await this.rest<{ total?: number; offset?: number; results?: Record<string, unknown>[] }>('GET', `/api/boards/search?${params}`);
+    return {
+      total: typeof raw.total === 'number' ? raw.total : (raw.results?.length ?? 0),
+      offset: typeof raw.offset === 'number' ? raw.offset : offset,
+      results: (raw.results ?? []).map(toSearchResult),
+    };
   }
 
   async getElement(id: string): Promise<RawElement | undefined> {
@@ -244,4 +332,30 @@ export function canvasChildren(elements: Record<string, RawElement>, boardId: st
     out.push({ x: p.x ?? 0, y: p.y ?? 0, score: p.score ?? 0, width: Number.isFinite(width) && width > 0 ? width : undefined });
   }
   return out;
+}
+
+/** Form laut luscoma/milanote-mcp; unbekannte Felder werden ignoriert. */
+export function toSearchResult(result: Record<string, unknown>): SearchResult {
+  const board = (result.board ?? {}) as RawElement & { _id?: string };
+  const ancestors = Array.isArray(result.ancestors) ? (result.ancestors as { content?: { title?: unknown }; title?: unknown }[]) : [];
+  const hits = Array.isArray(result.innerHits) ? (result.innerHits as Record<string, unknown>[]) : [];
+  const modified = result.modifiedTime ?? board.meta?.modifiedTime;
+  return {
+    boardId: String(result._id ?? board._id ?? ''),
+    title: board._id ? titleOf(board) : typeof result.title === 'string' ? result.title : null,
+    path: ancestors
+      .slice()
+      .reverse()
+      .map((a) => a.title ?? a.content?.title)
+      .filter((t): t is string => typeof t === 'string' && t !== ''),
+    modifiedTime: typeof modified === 'number' ? modified : undefined,
+    matches: hits.map((hit) => ({
+      elementId: typeof hit._id === 'string' ? hit._id : undefined,
+      type: typeof hit.elementType === 'string' ? hit.elementType : undefined,
+      snippet: (Array.isArray(hit.content) ? hit.content : [hit.content])
+        .filter((part): part is string => typeof part === 'string' && part !== '')
+        .join(' … ')
+        .replace(/\[hit\]|\[\/hit\]/g, '**'),
+    })),
+  };
 }

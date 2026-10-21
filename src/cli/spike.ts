@@ -1,18 +1,23 @@
-// Spike-CLI für Phase 1: Verbindung prüfen und eine Notiz anlegen.
+// Spike-CLI (Phase 1 und 2): Verbindung prüfen, Notiz anlegen, Boards lesen.
 //   npm run chrome                                     Chrome mit Debug-Port und eigenem Profil starten
 //   npm run spike -- check                             Anmeldung und Socket-Handshake prüfen (schreibt nichts)
 //   npm run spike -- note --board <id|url> --text "…" [--x 10 --y 4]
+//   npm run spike -- boards [--parent <id|url>] | board <id|url> | tree [--root <id|url>] [--depth n] | search <begriff>
 
 import { MilanoteClient } from '../milanote.ts';
 import { MilanoteError } from '../errors.ts';
 import { launchChrome } from '../session/chrome.ts';
 
-const HELP = `Milanote-Connector Spike (Phase 1)
+const HELP = `Milanote-Connector Spike (Phase 1 und 2)
 
   npm run chrome                                  Chrome mit eigenem Profil starten, dort einmal anmelden
   npm run spike -- check                          Anmeldung + Socket-Handshake prüfen (schreibt nichts)
   npm run spike -- note --board <id|url> --text "Hallo" [--x <n> --y <n>]
                                                   Notiz anlegen (nie ins Home-Board)
+  npm run spike -- boards [--parent <id|url>]     Unterboards (Standard: Home)
+  npm run spike -- board <id|url>                 Board lesen (JSON wie get_board)
+  npm run spike -- tree [--root <id|url>] [--depth <n>]
+  npm run spike -- search <begriff>
 Optionen: --port <n> (Standard 9222), --verbose
 `;
 
@@ -39,7 +44,7 @@ async function main(): Promise<void> {
     console.log('Im Chrome-Fenster bei Milanote anmelden (einmalig), danach: npm run spike -- check');
     return;
   }
-  if (command !== 'check' && command !== 'note') {
+  if (!['check', 'note', 'boards', 'board', 'tree', 'search'].includes(command ?? '')) {
     console.log(HELP);
     return;
   }
@@ -53,6 +58,17 @@ async function main(): Promise<void> {
       await client.checkSocket();
       console.log(`Socket-Handshake ok (${Date.now() - started} ms). Es wurde nichts geschrieben.`);
       return;
+    }
+    const print = (value: unknown) => console.log(JSON.stringify(value, null, 2));
+    if (command === 'boards') return print(await client.listBoards(option(args, '--parent')));
+    if (command === 'board') {
+      if (!args[0] || args[0].startsWith('--')) throw new MilanoteError('args', 'Board-ID oder URL fehlt');
+      return print(await client.readBoard(args[0]));
+    }
+    if (command === 'tree') return print(await client.getBoardTree(option(args, '--root'), numberOption(args, '--depth')));
+    if (command === 'search') {
+      const query = args.filter((a, i) => !a.startsWith('--') && args[i - 1] !== '--port').join(' ');
+      return print(await client.search(query));
     }
     const board = option(args, '--board');
     const text = option(args, '--text');
